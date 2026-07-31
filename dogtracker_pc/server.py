@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -22,9 +23,22 @@ from .frames import Frame
 logger = logging.getLogger(__name__)
 
 
+def _static_folder() -> Path:
+    """Resolve the static asset folder, on disk or inside a onefile bundle.
+
+    A PyInstaller onefile build imports this package from a zipped archive,
+    so ``Path(__file__).parent`` no longer points at real files on disk --
+    the bundled ``datas`` land under ``sys._MEIPASS`` instead.
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass) / "dogtracker_pc" / "static"
+    return Path(__file__).resolve().parent / "static"
+
+
 def create_app(folder: Path, frames: list[Frame], detections: list[Detection]) -> Flask:
     folder = Path(folder)
-    app = Flask(__name__)
+    app = Flask(__name__, static_folder=str(_static_folder()), static_url_path="/static")
 
     # Only files we already discovered as frames may be served back out, so a
     # crafted filename in the URL (e.g. "../../secrets.txt") can't escape the

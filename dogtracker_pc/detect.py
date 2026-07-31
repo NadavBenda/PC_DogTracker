@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Protocol
@@ -75,11 +76,28 @@ def save_cache(folder: Path, entries: dict) -> None:
     tmp.replace(path)
 
 
+def _bundled_weights_path() -> Optional[Path]:
+    """Locate weights bundled next to a frozen (PyInstaller onefile) executable.
+
+    A onefile build extracts its ``datas`` into a temp dir at ``sys._MEIPASS``
+    on each launch, unrelated to the process's current working directory --
+    a bare relative "yolov8s.pt" would not be found there. In a normal
+    (non-frozen) run this returns None and ultralytics resolves/downloads the
+    weights itself, exactly as it does during development.
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if not meipass:
+        return None
+    candidate = Path(meipass) / "yolov8s.pt"
+    return candidate if candidate.exists() else None
+
+
 def default_model_factory():
     """Lazily import ultralytics so the rest of the package works without it installed."""
     from ultralytics import YOLO
 
-    return YOLO("yolov8s.pt")
+    bundled = _bundled_weights_path()
+    return YOLO(str(bundled) if bundled else "yolov8s.pt")
 
 
 def run_detection(
