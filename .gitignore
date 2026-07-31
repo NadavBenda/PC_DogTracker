@@ -5,5 +5,9 @@ venv/
 build/
 dist/
 *.spec
+!packaging/*.spec
 *.egg-info/
 .pytest_cache/
+*.pt
+.dogtracker_cache/
+
