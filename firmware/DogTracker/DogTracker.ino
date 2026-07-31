@@ -348,6 +348,14 @@ void closeApWindow() {
 
 void setup() {
   Serial.begin(115200);
+  // Native USB CDC takes a moment to enumerate after reset -- wait for it,
+  // but time out and carry on regardless so a field-deployed unit (no PC
+  // ever attached) never hangs here waiting for a terminal that won't come.
+  uint32_t serialWaitStart = millis();
+  while (!Serial && millis() - serialWaitStart < 3000) {
+    delay(10);
+  }
+  delay(200); // let the host terminal finish attaching before the first line
   Serial.println();
 
   pinMode(STATUS_LED_PIN, OUTPUT);
