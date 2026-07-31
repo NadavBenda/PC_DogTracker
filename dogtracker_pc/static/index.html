@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dog Trajectory Tracker</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%232a78d6'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <h1>Dog Trajectory Tracker</h1>
+    <div class="folder" id="folderLabel"></div>
+  </header>
+
+  <section class="kpi-row" id="kpiRow" aria-label="Session summary"></section>
+
+  <section class="filter-row" aria-label="Analysis parameters">
+    <div class="filter-control">
+      <label for="distanceInput">Dwell radius (px)</label>
+      <input type="range" id="distanceInput" min="5" max="150" step="5" />
+      <output id="distanceOutput"></output>
+    </div>
+    <div class="filter-control">
+      <label for="gapInput">Gap tolerance (s)</label>
+      <input type="range" id="gapInput" min="0.5" max="15" step="0.5" />
+      <output id="gapOutput"></output>
+    </div>
+    <div class="filter-control">
+      <label for="blurInput">Heatmap smoothing</label>
+      <input type="range" id="blurInput" min="0" max="40" step="1" />
+      <output id="blurOutput"></output>
+    </div>
+  </section>
+
+  <div id="emptyState" class="card empty-state" hidden></div>
+
+  <div id="dashboard" hidden>
+    <div class="main-grid">
+      <div class="card">
+        <h2>Visit heatmap</h2>
+        <div class="heatmap-stage" id="heatmapStage">
+          <img class="base-frame" id="baseFrame" alt="Reference camera frame" />
+          <img id="heatmapImg" alt="Dog visit density heatmap" />
+          <div class="tooltip" id="heatmapTooltip">
+            <div class="value" id="tooltipValue"></div>
+            <div class="sub" id="tooltipSub"></div>
+          </div>
+        </div>
+        <div class="legend">
+          <span>Fewer visits</span>
+          <span class="ramp"></span>
+          <span>More visits</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Frame browser</h2>
+        <div class="frame-stage">
+          <img id="frameImg" alt="Selected frame" />
+          <canvas id="bboxCanvas"></canvas>
+        </div>
+        <div class="frame-meta">
+          <span id="frameFilename"></span>
+          <span id="frameTimestamp"></span>
+          <span id="frameConfidence"></span>
+        </div>
+        <div class="frame-controls">
+          <button id="prevBtn" class="ghost" aria-label="Previous detection">&larr;</button>
+          <input type="range" id="frameSlider" min="0" max="0" step="1" value="0" aria-label="Scrub detections" />
+          <button id="nextBtn" class="ghost" aria-label="Next detection">&rarr;</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Visits</h2>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Start</th>
+              <th>Duration</th>
+              <th>Frames</th>
+              <th>Location (x, y)</th>
+            </tr>
+          </thead>
+          <tbody id="visitsBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
