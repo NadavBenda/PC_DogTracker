@@ -2,14 +2,21 @@
  * DogTracker ESP32-S3 firmware
  * ------------------------------------------------------------------
  * - Continuously captures JPEG frames at ~5 FPS and saves them to the
- *   SD card as /dog_<millis>.jpg (compatible with the PC_DogTracker
- *   analysis tool's filename parser).
+ *   SD card as /<session>/dog_<millis>.jpg (compatible with the
+ *   PC_DogTracker analysis tool's filename parser -- point it at one
+ *   session folder, not the SD root).
  * - For the first AP_WINDOW_MS milliseconds (default 2 minutes) only,
  *   opens a Wi-Fi access point named "WatchDog" and serves a slow
- *   (default 1 FPS) MJPEG preview at http://192.168.4.1/stream so you
- *   can confirm camera placement/focus from a phone or laptop. After
- *   that window the AP and HTTP server are shut down completely and
- *   only SD recording continues.
+ *   (default 1 FPS) MJPEG preview at http://192.168.4.1/ so you can
+ *   confirm camera placement/focus from a phone or laptop. After that
+ *   window the AP and HTTP server are shut down completely and only SD
+ *   recording continues.
+ * - The board has no RTC, so the session folder starts out named from
+ *   ms-since-boot. Opening http://192.168.4.1/ during the AP window
+ *   sends the browser's clock to /settime automatically, which renames
+ *   new frames' folder to a real "YYYYMMDD_HHMMSS" (local time, see
+ *   TZ_OFFSET_SECONDS) -- frames captured before that sync stay in the
+ *   original boot-relative folder rather than being moved.
  * - Recording stops (cleanly) once the SD card runs out of space;
  *   existing frames are never overwritten or deleted.
  *
@@ -40,6 +47,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include <time.h>
+#include <sys/time.h>
 
 // ======================================================
 // Wi-Fi access point (first AP_WINDOW_MS only)
@@ -54,6 +63,17 @@ const uint32_t AP_WINDOW_MS = 2UL * 60UL * 1000UL; // 2 minutes
 const uint32_t CAPTURE_FPS = 5;
 const uint32_t CAPTURE_INTERVAL_MS = 1000 / CAPTURE_FPS;
 const uint32_t PREVIEW_FPS_DIVISOR = 5; // 5 FPS / 5 = 1 FPS preview stream
+
+// ======================================================
+// Time sync -- the board has no RTC, so it only knows "ms since boot"
+// until something with a correct clock tells it otherwise. Opening
+// http://192.168.4.1/ from a phone/PC during the AP window sends the
+// browser's clock automatically (see index_handler); if that never
+// happens, the session folder just keeps its boot-relative name.
+// TZ_OFFSET_SECONDS only affects the human-readable folder name, not
+// any recorded data -- adjust for your timezone / daylight saving.
+// ======================================================
+const long TZ_OFFSET_SECONDS = 2L * 3600L; // assumes Israel Standard Time (UTC+2); +3h in DST
 
 // ======================================================
 // Camera pins (ESP32-S3-CAM, from the known-working reference sketch)
@@ -117,6 +137,17 @@ const uint64_t SD_SAFETY_MARGIN_BYTES = 256UL * 1024UL;
 // How often (in frames) to re-check free space -- doesn't need to be
 // every frame, the safety margin above absorbs the extra ~5s of slack.
 const uint32_t SD_SPACE_CHECK_EVERY_N_FRAMES = 25;
+
+// ======================================================
+// Current session folder -- frames go to "<currentSessionDir>/dog_<millis>.jpg".
+// Starts as a boot-relative name; /settime switches it (for new frames
+// only, see closeApWindow()'s comment) to one named from the real start
+// time once a clock is available. Guarded by sessionDirMutex since the
+// capture task and the HTTP settime handler run in different tasks.
+// ======================================================
+static SemaphoreHandle_t sessionDirMutex;
+static char currentSessionDir[40];
+static volatile bool timeSynced = false;
 
 // ======================================================
 // Camera init
@@ -188,6 +219,48 @@ bool initSD() {
   return true;
 }
 
+// ======================================================
+// Session folder management
+// ======================================================
+
+// Creates `dir` on the SD card and (if it didn't already match) makes it
+// the active session folder for all frames from this point on. Existing
+// files already written to the previous session folder are left in place.
+void switchSessionFolder(const char *dir) {
+  if (xSemaphoreTake(sessionDirMutex, portMAX_DELAY) != pdTRUE) {
+    return;
+  }
+  if (strcmp(currentSessionDir, dir) != 0) {
+    SD_MMC.mkdir(dir);
+    strncpy(currentSessionDir, dir, sizeof(currentSessionDir) - 1);
+    currentSessionDir[sizeof(currentSessionDir) - 1] = '\0';
+  }
+  xSemaphoreGive(sessionDirMutex);
+}
+
+void startBootRelativeSession() {
+  char dir[40];
+  snprintf(dir, sizeof(dir), "/session_%lu", (unsigned long)millis());
+  switchSessionFolder(dir);
+  Serial.printf("Session folder: %s (boot-relative; will rename to a real timestamp if synced)\n", dir);
+}
+
+// Called from the /settime HTTP handler once a browser/PC sends its clock.
+void onTimeSynced(time_t epochUtc) {
+  struct timeval tv = { .tv_sec = epochUtc, .tv_usec = 0 };
+  settimeofday(&tv, nullptr);
+  timeSynced = true;
+
+  time_t localEpoch = epochUtc + TZ_OFFSET_SECONDS;
+  struct tm timeinfo;
+  gmtime_r(&localEpoch, &timeinfo); // epoch already shifted, so treat as UTC to avoid needing a TZ database
+
+  char dir[40];
+  strftime(dir, sizeof(dir), "/%Y%m%d_%H%M%S", &timeinfo);
+  switchSessionFolder(dir);
+  Serial.printf("Time synced -- new frames now saved under %s\n", dir);
+}
+
 bool sdHasSpace() {
   uint64_t freeBytes = SD_MMC.totalBytes() - SD_MMC.usedBytes();
   return freeBytes > SD_SAFETY_MARGIN_BYTES;
@@ -240,8 +313,13 @@ void captureTask(void *pvParameters) {
       continue;
     }
 
-    char filename[48];
-    snprintf(filename, sizeof(filename), "/dog_%lu.jpg", (unsigned long)millis());
+    char sessionDir[40];
+    if (xSemaphoreTake(sessionDirMutex, portMAX_DELAY) == pdTRUE) {
+      strncpy(sessionDir, currentSessionDir, sizeof(sessionDir));
+      xSemaphoreGive(sessionDirMutex);
+    }
+    char filename[80];
+    snprintf(filename, sizeof(filename), "%s/dog_%lu.jpg", sessionDir, (unsigned long)millis());
     File file = SD_MMC.open(filename, FILE_WRITE);
     if (file) {
       file.write(fb->buf, fb->len);
@@ -314,6 +392,46 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
+// GET /settime?epoch=<unix_seconds> -- sets the board's clock and switches
+// the active session folder to one named from that real time. Called
+// automatically by index_handler's page; can also be hit manually, e.g.
+// from a phone browser: http://192.168.4.1/settime?epoch=1737000000
+static esp_err_t settime_handler(httpd_req_t *req) {
+  char query[64];
+  char epochStr[24];
+  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+      httpd_query_key_value(query, "epoch", epochStr, sizeof(epochStr)) != ESP_OK) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing epoch query param");
+    return ESP_OK;
+  }
+
+  time_t epoch = (time_t)atol(epochStr);
+  if (epoch < 1700000000) { // sanity floor (~Nov 2023) -- rejects 0/garbage values
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "epoch out of range");
+    return ESP_OK;
+  }
+
+  onTimeSynced(epoch);
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_sendstr(req, "ok");
+  return ESP_OK;
+}
+
+// GET / -- the live preview page. Also sends the browser's own clock to
+// /settime on load, so just opening this page (during the AP window)
+// both lets you check the camera and syncs the board's time.
+static const char INDEX_HTML[] =
+    "<!doctype html><html><body style=\"margin:0;background:#000\">"
+    "<img src=\"/stream\" style=\"width:100%;display:block\">"
+    "<script>fetch('/settime?epoch=' + Math.floor(Date.now() / 1000)).catch(function(){});</script>"
+    "</body></html>";
+
+static esp_err_t index_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_sendstr(req, INDEX_HTML);
+  return ESP_OK;
+}
+
 void startCameraServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
@@ -324,9 +442,23 @@ void startCameraServer() {
     .handler = stream_handler,
     .user_ctx = NULL
   };
+  httpd_uri_t settime_uri = {
+    .uri = "/settime",
+    .method = HTTP_GET,
+    .handler = settime_handler,
+    .user_ctx = NULL
+  };
+  httpd_uri_t index_uri = {
+    .uri = "/",
+    .method = HTTP_GET,
+    .handler = index_handler,
+    .user_ctx = NULL
+  };
 
   if (httpd_start(&stream_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
+    httpd_register_uri_handler(stream_httpd, &settime_uri);
+    httpd_register_uri_handler(stream_httpd, &index_uri);
   }
 }
 
@@ -373,6 +505,8 @@ void setup() {
 
   previewMutex = xSemaphoreCreateMutex();
   previewReady = xSemaphoreCreateBinary();
+  sessionDirMutex = xSemaphoreCreateMutex();
+  startBootRelativeSession();
 
   WiFi.softAP(AP_SSID, AP_PASSWORD);
   Serial.print("Access point \"");
@@ -380,7 +514,7 @@ void setup() {
   Serial.print("\" up at ");
   Serial.println(WiFi.softAPIP());
   startCameraServer();
-  Serial.println("Preview stream: http://192.168.4.1/stream");
+  Serial.println("Open http://192.168.4.1/ to preview and auto-sync the clock (or /stream for preview only)");
 
   xTaskCreatePinnedToCore(captureTask, "captureTask", 8192, NULL, 1, NULL, 1);
 }

@@ -95,20 +95,27 @@ pytest
 The companion sketch that produces the SD card data this tool analyzes:
 
 - Captures JPEG frames continuously at **5 FPS** and saves each one to the
-  SD card as `/dog_<millis>.jpg` (matches this tool's filename parser).
-  Recording stops cleanly once the card fills up -- existing files are
-  never overwritten or deleted.
+  SD card as `/<session>/dog_<millis>.jpg` (point this tool at one session
+  folder, not the SD root). Recording stops cleanly once the card fills
+  up -- existing files are never overwritten or deleted.
 - For the **first 2 minutes only**, opens a Wi-Fi access point named
   `WatchDog` (password `12345678`) and serves a 1 FPS MJPEG preview at
-  `http://192.168.4.1/stream`, so you can check camera placement/focus
-  from a phone before walking away. After 2 minutes the AP and HTTP
-  server shut down completely (no lingering open network) and only the
-  5 FPS SD recording continues.
+  `http://192.168.4.1/`, so you can check camera placement/focus from a
+  phone before walking away. After 2 minutes the AP and HTTP server shut
+  down completely (no lingering open network) and only the 5 FPS SD
+  recording continues.
+- **No RTC on the board**, so the session folder starts out named from
+  milliseconds-since-boot. Opening `http://192.168.4.1/` during the AP
+  window sends your browser's clock to the board automatically, which
+  renames new frames' folder to a real `YYYYMMDD_HHMMSS` (local time --
+  see `TZ_OFFSET_SECONDS` in the sketch, defaults to UTC+2). Frames
+  captured before that sync stay in the original boot-relative folder
+  rather than being moved.
 - No on-device detection -- that's what this PC tool is for. The ESP32
   only captures and saves frames.
 
 Verified with a real PlatformIO compile against `esp32-s3-devkitc-1`
-(Arduino framework) -- 14.8% RAM / 27.6% flash used, no warnings.
+(Arduino framework) -- 14.9% RAM / 27.8% flash used, no warnings.
 
 **Before flashing, confirm the SD card wiring.** The sketch assumes
 SD_MMC 1-bit mode on GPIO39 (CLK), GPIO38 (CMD), GPIO40 (D0) -- a common
