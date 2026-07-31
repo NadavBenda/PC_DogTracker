@@ -90,6 +90,40 @@ pip install pytest
 pytest
 ```
 
+## Firmware (ESP32-S3, `firmware/DogTracker/DogTracker.ino`)
+
+The companion sketch that produces the SD card data this tool analyzes:
+
+- Captures JPEG frames continuously at **5 FPS** and saves each one to the
+  SD card as `/dog_<millis>.jpg` (matches this tool's filename parser).
+  Recording stops cleanly once the card fills up -- existing files are
+  never overwritten or deleted.
+- For the **first 2 minutes only**, opens a Wi-Fi access point named
+  `WatchDog` (password `12345678`) and serves a 1 FPS MJPEG preview at
+  `http://192.168.4.1/stream`, so you can check camera placement/focus
+  from a phone before walking away. After 2 minutes the AP and HTTP
+  server shut down completely (no lingering open network) and only the
+  5 FPS SD recording continues.
+- No on-device detection -- that's what this PC tool is for. The ESP32
+  only captures and saves frames.
+
+Verified with a real PlatformIO compile against `esp32-s3-devkitc-1`
+(Arduino framework) -- 14.8% RAM / 27.6% flash used, no warnings.
+
+**Before flashing, confirm the SD card wiring.** The sketch assumes
+SD_MMC 1-bit mode on GPIO39 (CLK), GPIO38 (CMD), GPIO40 (D0) -- a common
+pinout for this class of board, but unverified against your specific
+board's schematic. If it's wrong, `SD_MMC.begin()` fails loudly over
+Serial at boot (nothing gets damaged) -- update `SD_MMC_CLK_PIN` /
+`SD_MMC_CMD_PIN` / `SD_MMC_D0_PIN` at the top of the sketch and reflash.
+
+Arduino IDE board settings:
+- Board: **ESP32S3 Dev Module**
+- USB CDC On Boot: **Enabled** (for Serial over USB)
+- Flash Size: **16MB**
+- Partition Scheme: **Huge APP** (or similar, with room for camera/Wi-Fi/SD)
+- PSRAM: **OPI PSRAM**
+
 ## Dark mode
 
 The dashboard follows your OS's light/dark setting automatically.
