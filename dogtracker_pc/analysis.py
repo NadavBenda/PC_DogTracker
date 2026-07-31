@@ -18,6 +18,7 @@ from .detect import Detection
 DEFAULT_DISTANCE_THRESHOLD_PX = 40.0
 DEFAULT_TIME_GAP_THRESHOLD_MS = 3000
 DEFAULT_BLUR_RADIUS_PX = 15
+DEFAULT_AREA_RADIUS_PX = 60.0
 
 
 @dataclass(frozen=True)
@@ -77,6 +78,83 @@ def segment_visits(
 
     visits.append(flush(current))
     return visits
+
+
+@dataclass(frozen=True)
+class Area:
+    """Several visits close enough together to count as "the same small spot"."""
+
+    centroid_x: float
+    centroid_y: float
+    visit_count: int
+    total_duration_ms: int
+    avg_duration_ms: float
+    visit_indices: tuple[int, ...]
+
+
+def find_areas(visits: Sequence[Visit], area_radius_px: float = DEFAULT_AREA_RADIUS_PX) -> list[Area]:
+    """Group visits into small areas by proximity, ranked by how often they recur.
+
+    This is a second, coarser pass over the same visits `segment_visits`
+    already produced: two visits to (roughly) the same spot, separated by a
+    trip elsewhere, become one "area" with a visit count and an average
+    dwell time -- "the dog came back to the doorway 5 times, ~1 min each".
+
+    A simple greedy single-link clustering (each visit joins the nearest
+    existing area within ``area_radius_px``, else starts a new one) is used
+    rather than a general clustering algorithm: the input is a handful of
+    already-aggregated visits, not raw detections, so an exact/optimal
+    clustering isn't worth the extra complexity.
+    """
+    if not visits:
+        return []
+
+    clusters: list[dict] = []
+    for i, visit in enumerate(visits):
+        best_cluster = None
+        best_dist = None
+        for cluster in clusters:
+            dist = ((visit.centroid_x - cluster["cx"]) ** 2 + (visit.centroid_y - cluster["cy"]) ** 2) ** 0.5
+            if dist <= area_radius_px and (best_dist is None or dist < best_dist):
+                best_cluster = cluster
+                best_dist = dist
+
+        weight = max(visit.duration_ms, 1)
+        if best_cluster is None:
+            clusters.append(
+                {
+                    "cx": visit.centroid_x,
+                    "cy": visit.centroid_y,
+                    "weight": weight,
+                    "total_duration_ms": visit.duration_ms,
+                    "members": [i],
+                }
+            )
+        else:
+            prior_weight = best_cluster["weight"]
+            best_cluster["cx"] = (best_cluster["cx"] * prior_weight + visit.centroid_x * weight) / (
+                prior_weight + weight
+            )
+            best_cluster["cy"] = (best_cluster["cy"] * prior_weight + visit.centroid_y * weight) / (
+                prior_weight + weight
+            )
+            best_cluster["weight"] = prior_weight + weight
+            best_cluster["total_duration_ms"] += visit.duration_ms
+            best_cluster["members"].append(i)
+
+    areas = [
+        Area(
+            centroid_x=c["cx"],
+            centroid_y=c["cy"],
+            visit_count=len(c["members"]),
+            total_duration_ms=c["total_duration_ms"],
+            avg_duration_ms=c["total_duration_ms"] / len(c["members"]),
+            visit_indices=tuple(c["members"]),
+        )
+        for c in clusters
+    ]
+    areas.sort(key=lambda a: (a.visit_count, a.total_duration_ms), reverse=True)
+    return areas
 
 
 # Sequential blue ramp, steps 100->700 from the shared reference palette

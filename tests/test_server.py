@@ -39,6 +39,19 @@ def test_summary_endpoint(client):
     assert data["detection_count"] == len(dets)
     assert data["frame_width"] == frames[0].width
     assert data["duration_ms"] == frames[-1].timestamp_ms - frames[0].timestamp_ms
+    assert data["reference_frame"] == frames[len(frames) // 2].filename
+
+
+def test_areas_endpoint_ranks_and_includes_representative_frames(client):
+    c, _, dets = client
+    data = c.get("/api/areas?distance=1000&gap=100000&area_radius=1000").get_json()
+    # With very loose thresholds every detection folds into one visit and area.
+    assert len(data) == 1
+    area = data[0]
+    assert area["rank"] == 1
+    assert area["visit_count"] == 1
+    assert len(area["visits"]) == 1
+    assert area["visits"][0]["representative_filename"] in {d.filename for d in dets}
 
 
 def test_detections_endpoint(client):

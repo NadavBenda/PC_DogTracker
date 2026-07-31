@@ -32,6 +32,11 @@
       <input type="range" id="blurInput" min="0" max="40" step="1" />
       <output id="blurOutput"></output>
     </div>
+    <div class="filter-control">
+      <label for="areaInput">Area radius (px)</label>
+      <input type="range" id="areaInput" min="10" max="200" step="10" />
+      <output id="areaOutput"></output>
+    </div>
   </section>
 
   <div id="emptyState" class="card empty-state" hidden></div>
@@ -53,6 +58,10 @@
           <span class="ramp"></span>
           <span>More visits</span>
         </div>
+        <div class="ref-frame-row">
+          <span id="refFrameLabel"></span>
+          <button id="useCurrentFrameBtn" class="ghost" type="button">Use current frame as background</button>
+        </div>
       </div>
 
       <div class="card">
@@ -72,6 +81,15 @@
           <button id="nextBtn" class="ghost" aria-label="Next detection">&rarr;</button>
         </div>
       </div>
+    </div>
+
+    <div class="card" id="topAreaCard" hidden>
+      <h2>Most visited spot</h2>
+      <div class="top-area-summary">
+        <div class="top-area-headline" id="topAreaHeadline"></div>
+        <div class="top-area-location" id="topAreaLocation"></div>
+      </div>
+      <div class="thumb-strip" id="topAreaThumbs"></div>
     </div>
 
     <div class="card">

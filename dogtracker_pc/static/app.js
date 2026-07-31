@@ -245,40 +245,104 @@
     renderKPIs();
   }
 
+  function thumb(imgSrc, captionText, onClick) {
+    const wrap = document.createElement("div");
+    wrap.className = "thumb";
+    const img = document.createElement("img");
+    img.src = imgSrc;
+    img.alt = captionText;
+    img.loading = "lazy";
+    const caption = document.createElement("div");
+    caption.className = "caption";
+    caption.textContent = captionText;
+    wrap.append(img, caption);
+    wrap.addEventListener("click", onClick);
+    return wrap;
+  }
+
+  function renderTopArea(areas) {
+    const card = el("topAreaCard");
+    if (areas.length === 0) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    const top = areas[0];
+
+    el("topAreaHeadline").textContent =
+      top.visit_count === 1
+        ? `Visited once, for ${formatElapsed(top.avg_duration_ms)}`
+        : `Visited ${top.visit_count} times, ~${formatElapsed(top.avg_duration_ms)} each (${formatElapsed(top.total_duration_ms)} total)`;
+    el("topAreaLocation").textContent = `Around (${Math.round(top.centroid_x)}, ${Math.round(top.centroid_y)})`;
+
+    const strip = el("topAreaThumbs");
+    strip.replaceChildren(
+      ...top.visits.map((visit, i) =>
+        thumb(
+          `/frames/${encodeURIComponent(visit.representative_filename)}`,
+          `Visit ${i + 1} · ${formatElapsed(elapsedOf(visit.start_ts))}`,
+          () => setCurrentIndex(visit.representative_index)
+        )
+      )
+    );
+  }
+
+  async function refreshAreas() {
+    const distance = Number(el("distanceInput").value);
+    const gap = Number(el("gapInput").value) * 1000;
+    const areaRadius = Number(el("areaInput").value);
+    const areas = await fetchJSON(`/api/areas?distance=${distance}&gap=${gap}&area_radius=${areaRadius}`);
+    renderTopArea(areas);
+  }
+
   function refreshHeatmap() {
     const blur = Number(el("blurInput").value);
     el("heatmapImg").src = `/api/heatmap.png?blur=${blur}&t=${Date.now()}`;
+  }
+
+  function setReferenceFrame(filename) {
+    el("baseFrame").src = `/frames/${encodeURIComponent(filename)}`;
+    el("refFrameLabel").textContent = `Reference: ${filename}`;
   }
 
   function setupFilterControls() {
     const distanceInput = el("distanceInput");
     const gapInput = el("gapInput");
     const blurInput = el("blurInput");
+    const areaInput = el("areaInput");
     const defaults = state.summary.defaults;
 
     distanceInput.value = defaults.distance_threshold_px;
     gapInput.value = defaults.time_gap_threshold_ms / 1000;
     blurInput.value = defaults.blur_radius_px;
+    areaInput.value = defaults.area_radius_px;
 
     const syncOutputs = () => {
       el("distanceOutput").textContent = `${distanceInput.value}px`;
       el("gapOutput").textContent = `${Number(gapInput.value).toFixed(1)}s`;
       el("blurOutput").textContent = `${blurInput.value}px`;
+      el("areaOutput").textContent = `${areaInput.value}px`;
     };
     syncOutputs();
 
     const debouncedVisits = debounce(() => {
       syncOutputs();
       refreshVisits();
+      refreshAreas();
     }, 150);
     const debouncedHeatmap = debounce(() => {
       syncOutputs();
       refreshHeatmap();
     }, 150);
+    const debouncedAreas = debounce(() => {
+      syncOutputs();
+      refreshAreas();
+    }, 150);
 
     distanceInput.addEventListener("input", debouncedVisits);
     gapInput.addEventListener("input", debouncedVisits);
     blurInput.addEventListener("input", debouncedHeatmap);
+    areaInput.addEventListener("input", debouncedAreas);
   }
 
   function setupFrameControls() {
@@ -288,6 +352,9 @@
       setCurrentIndex(Number(event.target.value));
     });
     el("frameImg").addEventListener("load", drawBoundingBox);
+    el("useCurrentFrameBtn").addEventListener("click", () => {
+      setReferenceFrame(state.detections[state.currentIndex].filename);
+    });
   }
 
   async function init() {
@@ -312,7 +379,7 @@
     }
 
     el("dashboard").hidden = false;
-    el("baseFrame").src = `/frames/${encodeURIComponent(state.detections[0].filename)}`;
+    setReferenceFrame(summary.reference_frame || state.detections[0].filename);
 
     el("frameSlider").max = String(state.detections.length - 1);
 
@@ -320,7 +387,7 @@
     setupFrameControls();
     setupHeatmapInteraction();
 
-    await refreshVisits();
+    await Promise.all([refreshVisits(), refreshAreas()]);
     refreshHeatmap();
     setCurrentIndex(0);
   }

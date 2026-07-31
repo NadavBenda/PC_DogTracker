@@ -11,10 +11,12 @@ from typing import Optional
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 from .analysis import (
+    DEFAULT_AREA_RADIUS_PX,
     DEFAULT_BLUR_RADIUS_PX,
     DEFAULT_DISTANCE_THRESHOLD_PX,
     DEFAULT_TIME_GAP_THRESHOLD_MS,
     build_heatmap,
+    find_areas,
     segment_visits,
 )
 from .detect import Detection
@@ -47,6 +49,10 @@ def create_app(folder: Path, frames: list[Frame], detections: list[Detection]) -
     frame_by_name = {f.filename: f for f in frames}
     frame_width = frames[0].width if frames else 0
     frame_height = frames[0].height if frames else 0
+    # A frame from the temporal middle of the session tends to be a more
+    # representative "what does the scene normally look like" reference than
+    # frame 0, which can catch camera warm-up, a passerby, or bad light.
+    reference_frame = frames[len(frames) // 2].filename if frames else None
 
     @app.get("/")
     def index():
@@ -66,10 +72,12 @@ def create_app(folder: Path, frames: list[Frame], detections: list[Detection]) -
                 "first_timestamp_ms": first_ts,
                 "last_timestamp_ms": last_ts,
                 "duration_ms": max(last_ts - first_ts, 0),
+                "reference_frame": reference_frame,
                 "defaults": {
                     "distance_threshold_px": DEFAULT_DISTANCE_THRESHOLD_PX,
                     "time_gap_threshold_ms": DEFAULT_TIME_GAP_THRESHOLD_MS,
                     "blur_radius_px": DEFAULT_BLUR_RADIUS_PX,
+                    "area_radius_px": DEFAULT_AREA_RADIUS_PX,
                 },
             }
         )
@@ -111,6 +119,41 @@ def create_app(folder: Path, frames: list[Frame], detections: list[Detection]) -
                     "last_index": v.detection_indices[-1],
                 }
                 for v in visits
+            ]
+        )
+
+    @app.get("/api/areas")
+    def list_areas():
+        distance = request.args.get("distance", default=DEFAULT_DISTANCE_THRESHOLD_PX, type=float)
+        gap = request.args.get("gap", default=DEFAULT_TIME_GAP_THRESHOLD_MS, type=int)
+        area_radius = request.args.get("area_radius", default=DEFAULT_AREA_RADIUS_PX, type=float)
+
+        visits = segment_visits(detections, distance_threshold_px=distance, time_gap_threshold_ms=gap)
+        areas = find_areas(visits, area_radius_px=area_radius)
+
+        def visit_summary(visit_index: int) -> dict:
+            v = visits[visit_index]
+            mid = v.detection_indices[len(v.detection_indices) // 2]
+            return {
+                "start_ts": v.start_ts,
+                "duration_ms": v.duration_ms,
+                "frame_count": v.frame_count,
+                "representative_filename": detections[mid].filename,
+                "representative_index": mid,
+            }
+
+        return jsonify(
+            [
+                {
+                    "rank": rank,
+                    "centroid_x": area.centroid_x,
+                    "centroid_y": area.centroid_y,
+                    "visit_count": area.visit_count,
+                    "total_duration_ms": area.total_duration_ms,
+                    "avg_duration_ms": area.avg_duration_ms,
+                    "visits": [visit_summary(i) for i in area.visit_indices],
+                }
+                for rank, area in enumerate(areas, start=1)
             ]
         )
 
