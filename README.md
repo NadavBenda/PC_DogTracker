@@ -19,8 +19,11 @@ footage -- generated for illustration purposes, see below.)*
   than frame 0); pick any other frame as the background with one click.
 - **Most visited spot** -- the small area the dog returned to most often,
   with a count, average/total dwell time, and one thumbnail per visit.
-- **Frame browser** with the detected bounding box drawn on it, a scrubber,
-  and prev/next controls.
+- **Frame browser** scrubs through every recorded frame, not just the ones
+  with a detection -- frames with no dog show "No detection" instead of a
+  box, so you can review the full sequence for continuity. A clickable
+  **detection-presence ruler** below the scrubber shows at a glance which
+  parts of the session had a dog detected (colored) vs not (empty).
 - **Click-to-jump** everywhere: click a point on the heatmap, a row in the
   visits table, or a thumbnail in the most-visited-spot strip, and the frame
   browser jumps straight to it.

@@ -90,6 +90,15 @@ def create_app(
             }
         )
 
+    @app.get("/api/frames")
+    def list_frames():
+        return jsonify(
+            [
+                {"index": i, "filename": f.filename, "timestamp_ms": f.timestamp_ms}
+                for i, f in enumerate(frames)
+            ]
+        )
+
     @app.get("/api/detections")
     def list_detections():
         return jsonify(

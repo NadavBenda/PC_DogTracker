@@ -3,7 +3,10 @@
 
   const state = {
     summary: null,
+    frames: [],
     detections: [],
+    detectionByFilename: new Map(),
+    frameIndexByFilename: new Map(),
     visits: [],
     currentIndex: 0,
   };
@@ -54,14 +57,25 @@
     return timestampMs - state.summary.first_timestamp_ms;
   }
 
+  // Visits/areas are computed server-side purely over the detections array,
+  // so their indices (first_index, mid_index, representative_index, ...)
+  // refer to positions in state.detections -- not to state.frames, which
+  // the frame browser now scrubs over in full. This resolves one to the
+  // other via filename, the only thing both sides agree on.
+  function frameIndexForDetectionIndex(detectionIndex) {
+    const filename = state.detections[detectionIndex].filename;
+    return state.frameIndexByFilename.get(filename) ?? 0;
+  }
+
   function renderVisitsTable() {
     const body = el("visitsBody");
     body.replaceChildren();
     state.visits.forEach((visit, i) => {
       const row = document.createElement("tr");
-      row.dataset.firstIndex = String(visit.first_index);
-      row.dataset.lastIndex = String(visit.last_index);
-      row.dataset.midIndex = String(visit.mid_index);
+      const midFrameIndex = frameIndexForDetectionIndex(visit.mid_index);
+      row.dataset.firstIndex = String(frameIndexForDetectionIndex(visit.first_index));
+      row.dataset.lastIndex = String(frameIndexForDetectionIndex(visit.last_index));
+      row.dataset.midIndex = String(midFrameIndex);
 
       const cells = [
         String(i + 1),
@@ -75,7 +89,7 @@
         td.textContent = text;
         row.appendChild(td);
       }
-      row.addEventListener("click", () => setCurrentIndex(visit.mid_index));
+      row.addEventListener("click", () => setCurrentIndex(midFrameIndex));
       body.appendChild(row);
     });
     updateActiveVisitRow();
@@ -110,33 +124,43 @@
   }
 
   function setCurrentIndex(i) {
-    const dets = state.detections;
-    if (dets.length === 0) return;
-    const clamped = Math.max(0, Math.min(dets.length - 1, i));
+    const frames = state.frames;
+    if (frames.length === 0) return;
+    const clamped = Math.max(0, Math.min(frames.length - 1, i));
     state.currentIndex = clamped;
-    const det = dets[clamped];
+    const frame = frames[clamped];
+    const det = state.detectionByFilename.get(frame.filename);
 
     const frameImg = el("frameImg");
-    frameImg.src = `/frames/${encodeURIComponent(det.filename)}`;
-    frameImg.dataset.w = det.w;
-    frameImg.dataset.h = det.h;
-    frameImg.dataset.x = det.x;
-    frameImg.dataset.y = det.y;
+    frameImg.src = `/frames/${encodeURIComponent(frame.filename)}`;
+    if (det) {
+      frameImg.dataset.hasDetection = "1";
+      frameImg.dataset.w = det.w;
+      frameImg.dataset.h = det.h;
+      frameImg.dataset.x = det.x;
+      frameImg.dataset.y = det.y;
+    } else {
+      frameImg.dataset.hasDetection = "0";
+    }
 
-    el("frameFilename").textContent = det.filename;
-    el("frameTimestamp").textContent = formatElapsed(elapsedOf(det.timestamp_ms));
-    el("frameConfidence").textContent = `${Math.round(det.confidence * 100)}% confidence`;
+    el("frameFilename").textContent = frame.filename;
+    el("frameTimestamp").textContent = formatElapsed(elapsedOf(frame.timestamp_ms));
+    el("frameConfidence").textContent = det ? `${Math.round(det.confidence * 100)}% confidence` : "No detection";
 
     el("frameSlider").value = String(clamped);
     el("prevBtn").disabled = clamped === 0;
-    el("nextBtn").disabled = clamped === dets.length - 1;
+    el("nextBtn").disabled = clamped === frames.length - 1;
 
-    positionCurrentMarker(det);
+    if (det) {
+      positionCurrentMarker(det);
+    } else {
+      hideCurrentMarker();
+    }
+    updateRulerMarker();
     updateActiveVisitRow();
   }
 
-  function positionCurrentMarker(det) {
-    const stage = el("heatmapStage");
+  function ensureCurrentMarker() {
     let marker = el("currentMarker");
     if (!marker) {
       marker = document.createElement("div");
@@ -150,11 +174,21 @@
       marker.style.background = "var(--accent)";
       marker.style.boxShadow = "0 0 0 2px var(--surface-1)";
       marker.style.pointerEvents = "none";
-      stage.appendChild(marker);
+      el("heatmapStage").appendChild(marker);
     }
+    return marker;
+  }
+
+  function positionCurrentMarker(det) {
+    const marker = ensureCurrentMarker();
+    marker.style.display = "block";
     const { frame_width, frame_height } = state.summary;
     marker.style.left = `${(det.x / frame_width) * 100}%`;
     marker.style.top = `${(det.y / frame_height) * 100}%`;
+  }
+
+  function hideCurrentMarker() {
+    ensureCurrentMarker().style.display = "none";
   }
 
   function drawBoundingBox() {
@@ -168,6 +202,10 @@
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, w, h);
 
+    if (frameImg.dataset.hasDetection !== "1") {
+      return; // no dog detected in this frame -- nothing to draw
+    }
+
     const bx = Number(frameImg.dataset.x);
     const by = Number(frameImg.dataset.y);
     const bw = Number(frameImg.dataset.w);
@@ -175,6 +213,66 @@
     ctx.strokeStyle = "#2a78d6";
     ctx.lineWidth = Math.max(2, Math.round(w / 200));
     ctx.strokeRect(bx - bw / 2, by - bh / 2, bw, bh);
+  }
+
+  // ======================================================
+  // Detection-presence ruler: a clickable timeline showing which parts of
+  // the whole session had a dog detected (colored) vs not (empty), plus a
+  // marker for the currently-browsed frame. The coloring only needs
+  // recomputing when the data loads or the ruler resizes; the marker moves
+  // far more often, so it's a separate cheap overlay instead of a redraw.
+  // ======================================================
+  function renderDetectionRulerBackground() {
+    const canvas = el("detectionRuler");
+    const width = Math.max(Math.round(canvas.getBoundingClientRect().width), 1);
+    const height = 22;
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+
+    const styles = getComputedStyle(document.body);
+    const emptyColor = styles.getPropertyValue("--gridline").trim() || "#e1e0d9";
+    const accentColor = styles.getPropertyValue("--accent").trim() || "#2a78d6";
+
+    ctx.fillStyle = emptyColor;
+    ctx.fillRect(0, 0, width, height);
+
+    const total = state.frames.length;
+    if (total === 0) return;
+
+    ctx.fillStyle = accentColor;
+    for (let x = 0; x < width; x++) {
+      const startIdx = Math.floor((x / width) * total);
+      const endIdx = Math.max(startIdx + 1, Math.floor(((x + 1) / width) * total));
+      let hasDetection = false;
+      for (let i = startIdx; i < endIdx && i < total; i++) {
+        if (state.detectionByFilename.has(state.frames[i].filename)) {
+          hasDetection = true;
+          break;
+        }
+      }
+      if (hasDetection) {
+        ctx.fillRect(x, 0, 1, height);
+      }
+    }
+  }
+
+  function updateRulerMarker() {
+    const marker = el("rulerMarker");
+    const total = state.frames.length;
+    marker.style.left = total > 1 ? `${(state.currentIndex / (total - 1)) * 100}%` : "0%";
+  }
+
+  function setupRulerInteraction() {
+    const canvas = el("detectionRuler");
+    canvas.addEventListener("click", (event) => {
+      const rect = canvas.getBoundingClientRect();
+      const frac = (event.clientX - rect.left) / rect.width;
+      const index = Math.round(frac * (state.frames.length - 1));
+      setCurrentIndex(index);
+    });
+
+    window.addEventListener("resize", debounce(renderDetectionRulerBackground, 150));
   }
 
   function setupHeatmapInteraction() {
@@ -225,7 +323,7 @@
       if (state.detections.length === 0) return;
       const { fx, fy } = stageToFramePx(event.clientX, event.clientY);
       const { index } = nearestDetectionIndex(fx, fy);
-      setCurrentIndex(index);
+      setCurrentIndex(frameIndexForDetectionIndex(index));
     });
   }
 
@@ -281,7 +379,7 @@
         thumb(
           `/frames/${encodeURIComponent(visit.representative_filename)}`,
           `Visit ${i + 1} · ${formatElapsed(elapsedOf(visit.start_ts))}`,
-          () => setCurrentIndex(visit.representative_index)
+          () => setCurrentIndex(frameIndexForDetectionIndex(visit.representative_index))
         )
       )
     );
@@ -353,7 +451,7 @@
     });
     el("frameImg").addEventListener("load", drawBoundingBox);
     el("useCurrentFrameBtn").addEventListener("click", () => {
-      setReferenceFrame(state.detections[state.currentIndex].filename);
+      setReferenceFrame(state.frames[state.currentIndex].filename);
     });
   }
 
@@ -368,24 +466,32 @@
       return;
     }
 
+    state.frames = await fetchJSON("/api/frames");
     state.detections = await fetchJSON("/api/detections");
-
-    if (state.detections.length === 0) {
-      el("emptyState").hidden = false;
-      el("emptyState").textContent =
-        "No dog detections found in this session. The frames were processed, but YOLOv8s did not find a dog in any of them.";
-      renderKPIs();
-      return;
-    }
+    state.detectionByFilename = new Map(state.detections.map((d) => [d.filename, d]));
+    state.frameIndexByFilename = new Map(state.frames.map((f, i) => [f.filename, i]));
 
     el("dashboard").hidden = false;
-    setReferenceFrame(summary.reference_frame || state.detections[0].filename);
+    setReferenceFrame(summary.reference_frame || state.frames[0].filename);
 
-    el("frameSlider").max = String(state.detections.length - 1);
+    el("frameSlider").max = String(state.frames.length - 1);
 
     setupFilterControls();
     setupFrameControls();
     setupHeatmapInteraction();
+    setupRulerInteraction();
+    renderDetectionRulerBackground();
+
+    if (state.detections.length === 0) {
+      // Frames exist but nothing was detected -- still show the dashboard so
+      // the raw footage can be browsed (e.g. to check focus/framing); the
+      // heatmap/visits/most-visited-spot just end up empty, which they
+      // already handle on their own.
+      el("emptyState").hidden = false;
+      el("emptyState").textContent =
+        "No dog detections found in this session. The frames were processed, but YOLOv8s did not find a dog in any of them. " +
+        "You can still browse the raw frames below -- the ruler will be empty throughout.";
+    }
 
     await Promise.all([refreshVisits(), refreshAreas()]);
     refreshHeatmap();

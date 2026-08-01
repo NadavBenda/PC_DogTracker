@@ -76,9 +76,17 @@
           <span id="frameConfidence"></span>
         </div>
         <div class="frame-controls">
-          <button id="prevBtn" class="ghost" aria-label="Previous detection">&larr;</button>
-          <input type="range" id="frameSlider" min="0" max="0" step="1" value="0" aria-label="Scrub detections" />
-          <button id="nextBtn" class="ghost" aria-label="Next detection">&rarr;</button>
+          <button id="prevBtn" class="ghost" aria-label="Previous frame">&larr;</button>
+          <input type="range" id="frameSlider" min="0" max="0" step="1" value="0" aria-label="Scrub frames" />
+          <button id="nextBtn" class="ghost" aria-label="Next frame">&rarr;</button>
+        </div>
+        <div class="ruler-wrap">
+          <canvas id="detectionRuler" class="detection-ruler" aria-label="Dog detected (colored) vs not (empty), across the whole session"></canvas>
+          <div id="rulerMarker" class="ruler-marker"></div>
+        </div>
+        <div class="ruler-legend">
+          <span><span class="swatch swatch-on"></span> dog detected</span>
+          <span><span class="swatch swatch-off"></span> no detection</span>
         </div>
       </div>
     </div>

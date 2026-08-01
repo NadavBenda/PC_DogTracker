@@ -63,6 +63,14 @@ def test_detections_endpoint(client):
     assert data[0]["filename"] == dets[0].filename
 
 
+def test_frames_endpoint_lists_every_frame_not_just_detections(client):
+    c, frames, dets = client
+    data = c.get("/api/frames").get_json()
+    assert len(data) == len(frames)
+    assert len(frames) > len(dets)  # fixture has more frames than detections
+    assert [row["filename"] for row in data] == [f.filename for f in frames]
+
+
 def test_visits_endpoint_respects_query_params(client):
     c, _, _ = client
     tight = c.get("/api/visits?distance=1&gap=100").get_json()
