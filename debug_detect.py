@@ -18,9 +18,12 @@ original, e.g. photo1_annotated.jpg.
 import sys
 from pathlib import Path
 
-# Near-zero on purpose: the point is to see everything the model considered,
-# not just what would normally be reported as a real detection.
-MIN_CONFIDENCE = 0.001
+# Low on purpose: the point is to see everything plausible the model
+# considered, not just what would normally be reported as a real detection.
+MIN_CONFIDENCE_TEXT = 0.01
+# Higher bar for what actually gets drawn on the saved image, so it isn't
+# cluttered with near-noise boxes.
+MIN_CONFIDENCE_IMAGE = 0.05
 
 
 def main(argv: list[str]) -> int:
@@ -41,12 +44,12 @@ def main(argv: list[str]) -> int:
             continue
 
         print(f"\n=== {path} ===")
-        results = model.predict(source=str(path), conf=MIN_CONFIDENCE, verbose=False)
+        results = model.predict(source=str(path), conf=MIN_CONFIDENCE_TEXT, verbose=False)
         result = results[0]
         boxes = result.boxes
 
         if boxes is None or len(boxes) == 0:
-            print("  No objects detected at all, not even at near-zero confidence.")
+            print(f"  No objects detected at all above conf={MIN_CONFIDENCE_TEXT}.")
             print("  That usually means the image is too blurry/dark/small for the")
             print("  model to find ANY recognizable shape -- not a dog-specific issue.")
         else:
@@ -61,9 +64,12 @@ def main(argv: list[str]) -> int:
                 x1, y1, x2, y2 = (round(v) for v in xyxy)
                 print(f"  {label:15s} conf={conf:.3f}  box=({x1},{y1})-({x2},{y2}){marker}")
 
+        # Re-run at the higher image threshold so the saved annotation only
+        # draws boxes worth looking at, rather than every low-confidence guess.
+        image_results = model.predict(source=str(path), conf=MIN_CONFIDENCE_IMAGE, verbose=False)
         annotated_path = path.with_name(f"{path.stem}_annotated{path.suffix}")
-        result.save(filename=str(annotated_path))
-        print(f"  Annotated image saved to {annotated_path}")
+        image_results[0].save(filename=str(annotated_path))
+        print(f"  Annotated image (conf>{MIN_CONFIDENCE_IMAGE}) saved to {annotated_path}")
 
     return 0
 
