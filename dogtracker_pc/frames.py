@@ -14,9 +14,12 @@ logger = logging.getLogger(__name__)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg"}
 
 # The firmware names snapshots like "dog_<millis-or-epoch>.jpg". Grab the
-# longest run of digits in the filename as the timestamp; fall back to file
-# mtime for frames that were renamed or came from elsewhere.
-_TIMESTAMP_RE = re.compile(r"(\d{6,})")
+# digit run in the filename as the timestamp; fall back to file mtime for
+# frames that were renamed or came from elsewhere. No minimum digit count:
+# millis() is only 5 digits (or fewer) for the first ~100 seconds after
+# boot, and requiring 6+ silently mis-sorted exactly those early frames by
+# file mtime instead (which reflects copy order, not capture order).
+_TIMESTAMP_RE = re.compile(r"(\d+)")
 
 
 @dataclass(frozen=True)
