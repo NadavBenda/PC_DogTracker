@@ -215,8 +215,8 @@ bool initCamera() {
   config.pixel_format = PIXFORMAT_JPEG;
 
   if (psramFound()) {
-    Serial.println("PSRAM found -- using VGA capture");
-    config.frame_size   = FRAMESIZE_VGA; // 640x480
+    Serial.println("PSRAM found -- using SXGA capture");
+    config.frame_size   = FRAMESIZE_SXGA; // 1280x1024 (~4x VGA's pixel count)
     config.jpeg_quality = 10;
     config.fb_count     = 3;
     config.grab_mode    = CAMERA_GRAB_LATEST;
