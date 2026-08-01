@@ -138,9 +138,15 @@ The companion sketch that produces the SD card data this tool analyzes:
   folder, whether NTP time synced, frames captured so far, elapsed time,
   free SD space, and -- while the network window is open -- a countdown
   to when it closes.
+- **Hold the board's BOOT button (GPIO0) for ~1.5s** at any time to stop
+  recording and cleanly unmount the SD card before cutting power -- the
+  status LED switches to a fast strobe once it's actually safe to unplug.
+  Cutting power without doing this risks FAT corruption (same as pulling
+  a USB drive without ejecting it), which is exactly what happened during
+  testing on a session that was just unplugged directly.
 
 Verified with a real PlatformIO compile against `esp32-s3-devkitc-1`
-(Arduino framework) -- 15.2% RAM / 28.0% flash used, no warnings.
+(Arduino framework) -- 15.3% RAM / 28.1% flash used, no warnings.
 
 **Before flashing, confirm the SD card wiring.** The sketch assumes
 SD_MMC 1-bit mode on GPIO39 (CLK), GPIO38 (CMD), GPIO40 (D0) -- a common

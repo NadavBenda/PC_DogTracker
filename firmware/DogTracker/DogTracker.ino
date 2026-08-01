@@ -22,6 +22,11 @@
  *   isn't reliably unique if boot timing is consistent).
  * - Recording stops (cleanly) once the SD card runs out of space;
  *   existing frames are never overwritten or deleted.
+ * - Hold the board's BOOT button (GPIO0) for ~1.5s at any time to stop
+ *   recording and cleanly unmount the SD card before you cut power --
+ *   the status LED switches to a fast strobe once it's actually safe to
+ *   unplug. Cutting power without doing this risks FAT corruption, same
+ *   as pulling a USB drive out of a PC without ejecting it first.
  *
  * Hardware notes / things to verify for your specific board:
  *   - Camera pins below are taken from your working reference sketch.
@@ -120,6 +125,17 @@ const long TZ_OFFSET_SECONDS = 3L * 3600L; // Israel Daylight Time (UTC+3); flip
 #define STATUS_LED_PIN 2
 
 // ======================================================
+// Safe-shutdown button -- reuses the board's existing BOOT button
+// (GPIO0), which only matters for entering flash mode at power-on/reset;
+// during normal operation it's a free, unused input. Active-low (pressed
+// pulls it to GND), hence INPUT_PULLUP in setup().
+// ======================================================
+#define BOOT_BUTTON_PIN 0
+// Must be held this long to trigger -- long enough that a stray bump
+// against the button doesn't stop a session early.
+const uint32_t SAFE_SHUTDOWN_HOLD_MS = 1500;
+
+// ======================================================
 // MJPEG stream protocol
 // ======================================================
 #define PART_BOUNDARY "123456789000000000000987654321"
@@ -143,6 +159,16 @@ static volatile bool networkWindowOpen = false;
 static uint32_t networkWindowStart = 0;
 static volatile bool sdFull = false;
 static uint32_t frameCounter = 0;
+
+// ======================================================
+// Safe-shutdown handshake: loop() (main task) sets captureStopRequested,
+// then waits for captureTask (a separate pinned task) to acknowledge via
+// captureStopped before calling SD_MMC.end() -- otherwise the unmount
+// could race an in-flight file write on the other core.
+// ======================================================
+static volatile bool captureStopRequested = false;
+static volatile bool captureStopped = false;
+static volatile bool sdUnmounted = false;
 
 // Recording stops once free space drops below this, so a last partial
 // write can never corrupt the card or silently truncate a file.
@@ -358,6 +384,12 @@ void captureTask(void *pvParameters) {
 
   while (true) {
     uint32_t intervalMs = 1000 / (networkWindowOpen ? PREVIEW_CAPTURE_FPS : CAPTURE_FPS);
+
+    if (captureStopRequested) {
+      captureStopped = true; // ack for performSafeShutdown()'s handshake
+      vTaskDelay(pdMS_TO_TICKS(200));
+      continue;
+    }
 
     if (sdFull) {
       vTaskDelay(pdMS_TO_TICKS(1000)); // stopped cleanly; nothing left to do
@@ -576,6 +608,34 @@ void closeNetworkWindow() {
   Serial.println("Network window elapsed -- Wi-Fi and preview stream shut down. SD recording continues at full rate.");
 }
 
+// ======================================================
+// Triggered by holding BOOT for SAFE_SHUTDOWN_HOLD_MS (see loop()). Stops
+// the capture task, waits for its ack so the unmount can't race an
+// in-flight write, tears down networking if it's still up, then
+// unmounts the SD card. Once sdUnmounted is true, loop() switches the
+// LED to a fast strobe -- that's the actual "safe to unplug" signal.
+// ======================================================
+void performSafeShutdown() {
+  if (sdUnmounted) {
+    return; // already done
+  }
+  Serial.println("BOOT held -- stopping recording and unmounting SD card for safe removal...");
+
+  captureStopRequested = true;
+  uint32_t waitStart = millis();
+  while (!captureStopped && millis() - waitStart < 1000) {
+    delay(10);
+  }
+
+  if (networkWindowOpen) {
+    closeNetworkWindow();
+  }
+
+  SD_MMC.end();
+  sdUnmounted = true;
+  Serial.println("SD card unmounted -- SAFE TO UNPLUG POWER NOW (status LED strobing fast).");
+}
+
 void setup() {
   Serial.begin(115200);
   // Native USB CDC takes a moment to enumerate after reset -- wait for it,
@@ -590,6 +650,7 @@ void setup() {
 
   pinMode(STATUS_LED_PIN, OUTPUT);
   digitalWrite(STATUS_LED_PIN, HIGH); // solid on while the network window is open
+  pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
 
   if (!initCamera()) {
     Serial.println("Halting: camera init failed.");
@@ -631,6 +692,11 @@ void setup() {
 const uint32_t STATUS_REPORT_INTERVAL_MS = 30UL * 1000UL;
 
 void printStatusReport() {
+  if (sdUnmounted) {
+    Serial.println("[status] SD card unmounted -- safe to unplug, nothing more to report.");
+    return;
+  }
+
   char sessionDir[40];
   if (xSemaphoreTake(sessionDirMutex, portMAX_DELAY) == pdTRUE) {
     strncpy(sessionDir, currentSessionDir, sizeof(sessionDir));
@@ -659,6 +725,18 @@ void printStatusReport() {
 }
 
 void loop() {
+  // Safe-shutdown button: BOOT (GPIO0) reads LOW while held (INPUT_PULLUP).
+  static uint32_t buttonPressStart = 0;
+  static bool buttonWasPressed = false;
+  bool buttonPressed = digitalRead(BOOT_BUTTON_PIN) == LOW;
+  if (buttonPressed && !buttonWasPressed) {
+    buttonPressStart = millis();
+  }
+  if (buttonPressed && !sdUnmounted && millis() - buttonPressStart >= SAFE_SHUTDOWN_HOLD_MS) {
+    performSafeShutdown();
+  }
+  buttonWasPressed = buttonPressed;
+
   if (networkWindowOpen && millis() - networkWindowStart >= NETWORK_WINDOW_MS) {
     closeNetworkWindow();
     digitalWrite(STATUS_LED_PIN, LOW);
@@ -670,10 +748,16 @@ void loop() {
     printStatusReport();
   }
 
-  // Slow heartbeat blink once recording-only (no network window active)
-  // to show the board is alive; fast blink instead if the SD card filled up.
+  // LED priority: fast strobe once safely unmounted (highest priority --
+  // this is the "OK to unplug" signal, regardless of anything else), else
+  // the existing slow heartbeat / SD-full-fast-blink while recording-only.
   static uint32_t lastBlink = 0;
-  if (!networkWindowOpen) {
+  if (sdUnmounted) {
+    if (millis() - lastBlink >= 80) {
+      lastBlink = millis();
+      digitalWrite(STATUS_LED_PIN, !digitalRead(STATUS_LED_PIN));
+    }
+  } else if (!networkWindowOpen) {
     uint32_t period = sdFull ? 200 : 2000;
     if (millis() - lastBlink >= period) {
       lastBlink = millis();
