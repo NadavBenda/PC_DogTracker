@@ -19,6 +19,11 @@ DEFAULT_DISTANCE_THRESHOLD_PX = 40.0
 DEFAULT_TIME_GAP_THRESHOLD_MS = 3000
 DEFAULT_BLUR_RADIUS_PX = 15
 DEFAULT_AREA_RADIUS_PX = 60.0
+DEFAULT_TOP_AREAS_COUNT = 3
+# Floor for the on-screen circle drawn around an area: a single tightly
+# clustered visit would otherwise compute a near-zero spread and render as an
+# invisible dot.
+MIN_AREA_DISPLAY_RADIUS_PX = 25.0
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,7 @@ class Area:
 
     centroid_x: float
     centroid_y: float
+    radius_px: float
     visit_count: int
     total_duration_ms: int
     avg_duration_ms: float
@@ -142,10 +148,24 @@ def find_areas(visits: Sequence[Visit], area_radius_px: float = DEFAULT_AREA_RAD
             best_cluster["total_duration_ms"] += visit.duration_ms
             best_cluster["members"].append(i)
 
+    def cluster_radius(cluster: dict) -> float:
+        # How far the member visits actually spread around the final
+        # (weighted) centroid -- used to size the circle drawn on screen, not
+        # for clustering itself (that already happened above).
+        spread = max(
+            (
+                ((visits[i].centroid_x - cluster["cx"]) ** 2 + (visits[i].centroid_y - cluster["cy"]) ** 2) ** 0.5
+                for i in cluster["members"]
+            ),
+            default=0.0,
+        )
+        return max(spread, MIN_AREA_DISPLAY_RADIUS_PX)
+
     areas = [
         Area(
             centroid_x=c["cx"],
             centroid_y=c["cy"],
+            radius_px=cluster_radius(c),
             visit_count=len(c["members"]),
             total_duration_ms=c["total_duration_ms"],
             avg_duration_ms=c["total_duration_ms"] / len(c["members"]),

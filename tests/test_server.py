@@ -48,12 +48,28 @@ def test_areas_endpoint_ranks_and_includes_representative_frames(client):
     c, _, dets = client
     data = c.get("/api/areas?distance=1000&gap=100000&area_radius=1000").get_json()
     # With very loose thresholds every detection folds into one visit and area.
-    assert len(data) == 1
-    area = data[0]
+    assert len(data["areas"]) == 1
+    area = data["areas"][0]
     assert area["rank"] == 1
     assert area["visit_count"] == 1
+    assert area["is_highlighted"] is True
+    assert area["radius_px"] > 0
     assert len(area["visits"]) == 1
     assert area["visits"][0]["representative_filename"] in {d.filename for d in dets}
+    assert data["total_visit_duration_ms"] == area["total_duration_ms"]
+    assert data["elsewhere_duration_ms"] == 0
+
+
+def test_areas_endpoint_top_n_marks_extra_areas_as_elsewhere(client):
+    c, _, _ = client
+    # Tight thresholds so the 3 detections (10,10)/(11,10)/(12,10) become 3
+    # separate one-visit areas; top_n=1 highlights only the best one.
+    data = c.get("/api/areas?distance=0&gap=100000&area_radius=0&top_n=1").get_json()
+    assert len(data["areas"]) == 3
+    assert data["areas"][0]["is_highlighted"] is True
+    assert data["areas"][1]["is_highlighted"] is False
+    assert data["areas"][2]["is_highlighted"] is False
+    assert data["elsewhere_duration_ms"] == data["total_visit_duration_ms"] - data["areas"][0]["total_duration_ms"]
 
 
 def test_detections_endpoint(client):

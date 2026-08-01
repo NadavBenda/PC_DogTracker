@@ -37,6 +37,11 @@
       <input type="range" id="areaInput" min="10" max="200" step="10" />
       <output id="areaOutput"></output>
     </div>
+    <div class="filter-control">
+      <label for="topNInput">Regions to highlight</label>
+      <input type="range" id="topNInput" min="1" max="6" step="1" />
+      <output id="topNOutput"></output>
+    </div>
   </section>
 
   <div id="emptyState" class="card empty-state" hidden></div>
@@ -48,6 +53,7 @@
         <div class="heatmap-stage" id="heatmapStage">
           <img class="base-frame" id="baseFrame" alt="Reference camera frame" />
           <img id="heatmapImg" alt="Dog visit density heatmap" />
+          <div class="area-overlays" id="areaOverlays"></div>
           <div class="tooltip" id="heatmapTooltip">
             <div class="value" id="tooltipValue"></div>
             <div class="sub" id="tooltipSub"></div>
@@ -91,13 +97,10 @@
       </div>
     </div>
 
-    <div class="card" id="topAreaCard" hidden>
-      <h2>Most visited spot</h2>
-      <div class="top-area-summary">
-        <div class="top-area-headline" id="topAreaHeadline"></div>
-        <div class="top-area-location" id="topAreaLocation"></div>
-      </div>
-      <div class="thumb-strip" id="topAreaThumbs"></div>
+    <div class="card" id="areasCard" hidden>
+      <h2>Preferred locations</h2>
+      <div class="areas-overview" id="areasOverview"></div>
+      <div class="area-list" id="areaList"></div>
     </div>
 
     <div class="card">

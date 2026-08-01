@@ -16,6 +16,7 @@ from .analysis import (
     DEFAULT_BLUR_RADIUS_PX,
     DEFAULT_DISTANCE_THRESHOLD_PX,
     DEFAULT_TIME_GAP_THRESHOLD_MS,
+    DEFAULT_TOP_AREAS_COUNT,
     build_heatmap,
     find_areas,
     segment_visits,
@@ -86,6 +87,7 @@ def create_app(
                     "time_gap_threshold_ms": DEFAULT_TIME_GAP_THRESHOLD_MS,
                     "blur_radius_px": DEFAULT_BLUR_RADIUS_PX,
                     "area_radius_px": DEFAULT_AREA_RADIUS_PX,
+                    "top_areas_count": DEFAULT_TOP_AREAS_COUNT,
                 },
             }
         )
@@ -144,6 +146,7 @@ def create_app(
         distance = request.args.get("distance", default=DEFAULT_DISTANCE_THRESHOLD_PX, type=float)
         gap = request.args.get("gap", default=DEFAULT_TIME_GAP_THRESHOLD_MS, type=int)
         area_radius = request.args.get("area_radius", default=DEFAULT_AREA_RADIUS_PX, type=float)
+        top_n = request.args.get("top_n", default=DEFAULT_TOP_AREAS_COUNT, type=int)
 
         visits = segment_visits(detections, distance_threshold_px=distance, time_gap_threshold_ms=gap)
         areas = find_areas(visits, area_radius_px=area_radius)
@@ -159,19 +162,33 @@ def create_app(
                 "representative_index": mid,
             }
 
+        # The dog's handful of preferred spots are the top `top_n` areas by
+        # (visit_count, total_duration_ms) -- already how `areas` is sorted.
+        # Everything else counted as a "visit" but outside those highlighted
+        # spots is time in transit / minor one-off stops, not a preferred
+        # location.
+        highlighted_duration_ms = sum(area.total_duration_ms for area in areas[:top_n])
+        total_visit_duration_ms = sum(v.duration_ms for v in visits)
+
         return jsonify(
-            [
-                {
-                    "rank": rank,
-                    "centroid_x": area.centroid_x,
-                    "centroid_y": area.centroid_y,
-                    "visit_count": area.visit_count,
-                    "total_duration_ms": area.total_duration_ms,
-                    "avg_duration_ms": area.avg_duration_ms,
-                    "visits": [visit_summary(i) for i in area.visit_indices],
-                }
-                for rank, area in enumerate(areas, start=1)
-            ]
+            {
+                "areas": [
+                    {
+                        "rank": rank,
+                        "centroid_x": area.centroid_x,
+                        "centroid_y": area.centroid_y,
+                        "radius_px": area.radius_px,
+                        "visit_count": area.visit_count,
+                        "total_duration_ms": area.total_duration_ms,
+                        "avg_duration_ms": area.avg_duration_ms,
+                        "is_highlighted": rank <= top_n,
+                        "visits": [visit_summary(i) for i in area.visit_indices],
+                    }
+                    for rank, area in enumerate(areas, start=1)
+                ],
+                "total_visit_duration_ms": total_visit_duration_ms,
+                "elsewhere_duration_ms": max(total_visit_duration_ms - highlighted_duration_ms, 0),
+            }
         )
 
     @app.get("/api/heatmap.png")

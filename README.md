@@ -17,21 +17,27 @@ footage -- generated for illustration purposes, see below.)*
 - **Visit heatmap** overlaid on a frame from the middle of the session (a
   more representative "what does this scene normally look like" reference
   than frame 0); pick any other frame as the background with one click.
-- **Most visited spot** -- the small area the dog returned to most often,
-  with a count, average/total dwell time, and one thumbnail per visit.
+- **Preferred locations** -- the dog's handful of regular spots (e.g. a
+  doghouse, a water bowl), drawn as circles right on the heatmap image, each
+  numbered and sized to the area it actually covers. Per region: how many
+  times it was visited, the length of every individual visit, and the total
+  time spent there. A summary line splits total tracked time into "in a
+  highlighted region" vs. "elsewhere (in transit)" -- time spent moving
+  between spots rather than dwelling in one of them.
 - **Frame browser** scrubs through every recorded frame, not just the ones
   with a detection -- frames with no dog show "No detection" instead of a
   box, so you can review the full sequence for continuity. A clickable
   **detection-presence ruler** below the scrubber shows at a glance which
   parts of the session had a dog detected (colored) vs not (empty).
 - **Click-to-jump** everywhere: click a point on the heatmap, a row in the
-  visits table, or a thumbnail in the most-visited-spot strip, and the frame
-  browser jumps straight to it.
+  visits table, a region circle, or a thumbnail in a region's visit strip,
+  and the frame browser jumps straight to it.
 - **Adjustable thresholds** (dwell radius, gap tolerance, area radius,
-  heatmap smoothing) recompute the visits/areas/heatmap live.
+  heatmap smoothing, how many regions to highlight) recompute the
+  visits/regions/heatmap live.
 - Runs entirely on `127.0.0.1`; light/dark mode follow your system.
 
-<img src="docs/screenshots/most_visited_spot.png" alt="Most visited spot card" width="700" />
+<img src="docs/screenshots/preferred_locations.png" alt="Preferred locations card" width="700" />
 
 ## How it works
 
@@ -43,7 +49,9 @@ footage -- generated for illustration purposes, see below.)*
    the same session skips detection entirely.
 3. Groups detections into **visits** (a contiguous dwell in roughly one
    spot) and **areas** (visits close enough together to count as the same
-   small spot, e.g. repeated trips to a doghouse) (`analysis.py`).
+   small spot, e.g. repeated trips to a doghouse); the top few areas by
+   visit count/duration are highlighted as the dog's "preferred locations",
+   with everything else counted as time elsewhere (`analysis.py`).
 4. Serves everything from a small Flask app (`server.py` + `static/`) --
    no telemetry, no external requests, nothing leaves the machine.
 

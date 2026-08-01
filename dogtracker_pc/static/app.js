@@ -358,24 +358,69 @@
     return wrap;
   }
 
-  function renderTopArea(areas) {
-    const card = el("topAreaCard");
-    if (areas.length === 0) {
-      card.hidden = true;
-      return;
+  // Circle overlays on the reference/heatmap image, one per highlighted
+  // area. Sized from the area's radius_px (spread of its member visits, or a
+  // visible-minimum floor) so the region actually looks like it encloses
+  // where the dog was, not just a point.
+  function renderAreaOverlays(areas) {
+    const container = el("areaOverlays");
+    container.replaceChildren();
+    const { frame_width, frame_height } = state.summary;
+    const highlighted = areas.filter((a) => a.is_highlighted);
+
+    for (const area of highlighted) {
+      const circle = document.createElement("div");
+      circle.className = "area-overlay-circle";
+      circle.style.left = `${(area.centroid_x / frame_width) * 100}%`;
+      circle.style.top = `${(area.centroid_y / frame_height) * 100}%`;
+      circle.style.width = `${((2 * area.radius_px) / frame_width) * 100}%`;
+      circle.style.height = `${((2 * area.radius_px) / frame_height) * 100}%`;
+      circle.title = `Region ${area.rank} · ${area.visit_count} visit${area.visit_count === 1 ? "" : "s"}, ${formatElapsed(area.total_duration_ms)} total`;
+
+      const label = document.createElement("span");
+      label.className = "area-overlay-label";
+      label.textContent = String(area.rank);
+      circle.appendChild(label);
+
+      const jumpToIndex = frameIndexForDetectionIndex(area.visits[0].representative_index);
+      circle.addEventListener("click", (event) => {
+        event.stopPropagation();
+        setCurrentIndex(jumpToIndex);
+      });
+
+      container.appendChild(circle);
     }
-    card.hidden = false;
-    const top = areas[0];
+  }
 
-    el("topAreaHeadline").textContent =
-      top.visit_count === 1
-        ? `Visited once, for ${formatElapsed(top.avg_duration_ms)}`
-        : `Visited ${top.visit_count} times, ~${formatElapsed(top.avg_duration_ms)} each (${formatElapsed(top.total_duration_ms)} total)`;
-    el("topAreaLocation").textContent = `Around (${Math.round(top.centroid_x)}, ${Math.round(top.centroid_y)})`;
+  function areaCard(area) {
+    const card = document.createElement("div");
+    card.className = "area-card";
 
-    const strip = el("topAreaThumbs");
-    strip.replaceChildren(
-      ...top.visits.map((visit, i) =>
+    const header = document.createElement("div");
+    header.className = "area-card-header";
+    const title = document.createElement("div");
+    title.className = "area-card-title";
+    title.textContent = `Region ${area.rank}`;
+    const location = document.createElement("div");
+    location.className = "area-card-location";
+    location.textContent = `Around (${Math.round(area.centroid_x)}, ${Math.round(area.centroid_y)})`;
+    header.append(title, location);
+
+    const headline = document.createElement("div");
+    headline.className = "area-card-headline";
+    headline.textContent =
+      area.visit_count === 1
+        ? `Visited once, for ${formatElapsed(area.avg_duration_ms)}`
+        : `Visited ${area.visit_count} times, ${formatElapsed(area.total_duration_ms)} total`;
+
+    const lengths = document.createElement("div");
+    lengths.className = "area-card-lengths";
+    lengths.textContent = `Visit lengths: ${area.visits.map((v) => formatElapsed(v.duration_ms)).join(", ")}`;
+
+    const strip = document.createElement("div");
+    strip.className = "thumb-strip";
+    strip.append(
+      ...area.visits.map((visit, i) =>
         thumb(
           `/frames/${encodeURIComponent(visit.representative_filename)}`,
           `Visit ${i + 1} · ${formatElapsed(elapsedOf(visit.start_ts))}`,
@@ -383,14 +428,40 @@
         )
       )
     );
+
+    card.append(header, headline, lengths, strip);
+    return card;
+  }
+
+  function renderAreas(data) {
+    const card = el("areasCard");
+    if (data.areas.length === 0) {
+      card.hidden = true;
+      renderAreaOverlays([]);
+      return;
+    }
+    card.hidden = false;
+
+    const highlighted = data.areas.filter((a) => a.is_highlighted);
+    const overview = el("areasOverview");
+    overview.replaceChildren(
+      statTile("Time in highlighted regions", formatElapsed(data.total_visit_duration_ms - data.elsewhere_duration_ms)),
+      statTile("Elsewhere (in transit)", formatElapsed(data.elsewhere_duration_ms))
+    );
+
+    el("areaList").replaceChildren(...highlighted.map(areaCard));
+    renderAreaOverlays(data.areas);
   }
 
   async function refreshAreas() {
     const distance = Number(el("distanceInput").value);
     const gap = Number(el("gapInput").value) * 1000;
     const areaRadius = Number(el("areaInput").value);
-    const areas = await fetchJSON(`/api/areas?distance=${distance}&gap=${gap}&area_radius=${areaRadius}`);
-    renderTopArea(areas);
+    const topN = Number(el("topNInput").value);
+    const data = await fetchJSON(
+      `/api/areas?distance=${distance}&gap=${gap}&area_radius=${areaRadius}&top_n=${topN}`
+    );
+    renderAreas(data);
   }
 
   function refreshHeatmap() {
@@ -408,18 +479,21 @@
     const gapInput = el("gapInput");
     const blurInput = el("blurInput");
     const areaInput = el("areaInput");
+    const topNInput = el("topNInput");
     const defaults = state.summary.defaults;
 
     distanceInput.value = defaults.distance_threshold_px;
     gapInput.value = defaults.time_gap_threshold_ms / 1000;
     blurInput.value = defaults.blur_radius_px;
     areaInput.value = defaults.area_radius_px;
+    topNInput.value = defaults.top_areas_count;
 
     const syncOutputs = () => {
       el("distanceOutput").textContent = `${distanceInput.value}px`;
       el("gapOutput").textContent = `${Number(gapInput.value).toFixed(1)}s`;
       el("blurOutput").textContent = `${blurInput.value}px`;
       el("areaOutput").textContent = `${areaInput.value}px`;
+      el("topNOutput").textContent = topNInput.value;
     };
     syncOutputs();
 
@@ -441,6 +515,7 @@
     gapInput.addEventListener("input", debouncedVisits);
     blurInput.addEventListener("input", debouncedHeatmap);
     areaInput.addEventListener("input", debouncedAreas);
+    topNInput.addEventListener("input", debouncedAreas);
   }
 
   function setupFrameControls() {
