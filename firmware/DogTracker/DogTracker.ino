@@ -84,7 +84,7 @@ const uint32_t PREVIEW_CAPTURE_FPS = 2; // reduced rate while the network window
 // boot-relative fallback name for that recording. TZ_OFFSET_SECONDS
 // only affects the human-readable folder name, not any recorded data.
 // ======================================================
-const long TZ_OFFSET_SECONDS = 2L * 3600L; // assumes Israel Standard Time (UTC+2); +3h in DST
+const long TZ_OFFSET_SECONDS = 3L * 3600L; // Israel Daylight Time (UTC+3); flip to 2*3600 in winter (IST)
 
 // ======================================================
 // Camera pins (ESP32-S3-CAM, from the known-working reference sketch)
@@ -622,10 +622,52 @@ void setup() {
   xTaskCreatePinnedToCore(captureTask, "captureTask", 8192, NULL, 1, NULL, 1);
 }
 
+// ======================================================
+// Periodic Serial status report, every STATUS_REPORT_INTERVAL_MS: the
+// session folder in use, whether NTP time synced, frames captured so
+// far, elapsed time, remaining SD space, and -- while the network
+// window is open -- a countdown to when it closes.
+// ======================================================
+const uint32_t STATUS_REPORT_INTERVAL_MS = 30UL * 1000UL;
+
+void printStatusReport() {
+  char sessionDir[40];
+  if (xSemaphoreTake(sessionDirMutex, portMAX_DELAY) == pdTRUE) {
+    strncpy(sessionDir, currentSessionDir, sizeof(sessionDir));
+    xSemaphoreGive(sessionDirMutex);
+  }
+
+  uint64_t freeMB = (SD_MMC.totalBytes() - SD_MMC.usedBytes()) / (1024 * 1024);
+
+  Serial.printf(
+      "[status] session=%s timeSynced=%s framesCaptured=%lu elapsed=%lus sdFree=%lluMB",
+      sessionDir,
+      timeSynced ? "yes" : "no",
+      (unsigned long)frameCounter,
+      (unsigned long)(millis() / 1000),
+      freeMB);
+
+  if (networkWindowOpen) {
+    int32_t remainingMs = (int32_t)((networkWindowStart + NETWORK_WINDOW_MS) - millis());
+    if (remainingMs < 0) {
+      remainingMs = 0;
+    }
+    Serial.printf(" networkWindowRemaining=%lds\n", (long)(remainingMs / 1000));
+  } else {
+    Serial.println();
+  }
+}
+
 void loop() {
   if (networkWindowOpen && millis() - networkWindowStart >= NETWORK_WINDOW_MS) {
     closeNetworkWindow();
     digitalWrite(STATUS_LED_PIN, LOW);
+  }
+
+  static uint32_t lastStatusReport = 0;
+  if (millis() - lastStatusReport >= STATUS_REPORT_INTERVAL_MS) {
+    lastStatusReport = millis();
+    printStatusReport();
   }
 
   // Slow heartbeat blink once recording-only (no network window active)
