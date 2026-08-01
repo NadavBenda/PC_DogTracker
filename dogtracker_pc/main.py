@@ -116,6 +116,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--rescan", action="store_true", help="Ignore cached detections and re-run YOLO on every frame"
     )
     parser.add_argument("--no-gui", action="store_true", help="Never use Tk dialogs; FOLDER must be given")
+    parser.add_argument(
+        "--rotate",
+        type=int,
+        choices=[90, 180, 270],
+        default=0,
+        help="Rotate frames clockwise by this many degrees before detection/display "
+        "(use if the camera is mounted rotated, e.g. --rotate 180 for upside-down)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -151,14 +159,16 @@ def main(argv: Optional[list[str]] = None) -> int:
             progress_window.update(done, total)
 
     logger.info("Running dog detection (cached results are reused automatically)...")
-    detections = run_detection(folder, frames, progress_cb=progress_cb, use_cache=not args.rescan)
+    detections = run_detection(
+        folder, frames, progress_cb=progress_cb, use_cache=not args.rescan, rotate_degrees=args.rotate
+    )
     logger.info("Detected the dog in %d/%d frames", len(detections), len(frames))
 
     if progress_window:
         progress_window.close()
 
     port = _find_free_port(args.port)
-    app = create_app(folder, frames, detections)
+    app = create_app(folder, frames, detections, rotate_degrees=args.rotate)
     url = f"http://127.0.0.1:{port}/"
 
     if not args.no_browser:

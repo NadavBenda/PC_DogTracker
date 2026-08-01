@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
+from PIL import Image
 
 from .analysis import (
     DEFAULT_AREA_RADIUS_PX,
@@ -38,7 +39,12 @@ def _static_folder() -> Path:
     return Path(__file__).resolve().parent / "static"
 
 
-def create_app(folder: Path, frames: list[Frame], detections: list[Detection]) -> Flask:
+def create_app(
+    folder: Path,
+    frames: list[Frame],
+    detections: list[Detection],
+    rotate_degrees: int = 0,
+) -> Flask:
     folder = Path(folder)
     app = Flask(__name__, static_folder=str(_static_folder()), static_url_path="/static")
 
@@ -49,6 +55,8 @@ def create_app(folder: Path, frames: list[Frame], detections: list[Detection]) -
     frame_by_name = {f.filename: f for f in frames}
     frame_width = frames[0].width if frames else 0
     frame_height = frames[0].height if frames else 0
+    if rotate_degrees in (90, 270):
+        frame_width, frame_height = frame_height, frame_width
     # A frame from the temporal middle of the session tends to be a more
     # representative "what does the scene normally look like" reference than
     # frame 0, which can catch camera warm-up, a passerby, or bad light.
@@ -187,6 +195,13 @@ def create_app(folder: Path, frames: list[Frame], detections: list[Detection]) -
     def serve_frame(filename: str):
         if filename not in frame_by_name:
             abort(404)
-        return send_from_directory(folder, filename)
+        if not rotate_degrees:
+            return send_from_directory(folder, filename)
+
+        with Image.open(folder / filename) as img:
+            rotated = img.convert("RGB").rotate(-rotate_degrees, expand=True)
+            buf = io.BytesIO()
+            rotated.save(buf, format="JPEG", quality=90)
+        return Response(buf.getvalue(), mimetype="image/jpeg")
 
     return app

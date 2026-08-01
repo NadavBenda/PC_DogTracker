@@ -1,8 +1,9 @@
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
-from dogtracker_pc.detect import Detection, load_cache, run_detection
+from dogtracker_pc.detect import Detection, _detect_single, load_cache, run_detection
 from dogtracker_pc.frames import discover_frames
 
 
@@ -34,8 +35,13 @@ class _FakeModel:
 
     def predict(self, source, classes, verbose):
         self.predict_calls += 1
-        filename = Path(source).name
-        entries = self.boxes_by_filename.get(filename, [])
+        if isinstance(source, (str, Path)):
+            filename = Path(source).name
+            entries = self.boxes_by_filename.get(filename, [])
+        else:
+            # A rotated frame is handed over as an already-loaded image, not
+            # a path; tests that rotate don't need per-filename lookup here.
+            entries = next(iter(self.boxes_by_filename.values()), [])
         if not entries:
             return [_FakeResult(_FakeBoxes([], []))]
         xyxy = [e[0] for e in entries]
@@ -112,3 +118,68 @@ def test_cache_invalidated_when_file_changes(frames_folder: Path):
 def test_detection_is_a_plain_dataclass():
     det = Detection("a.jpg", 0, 64, 48, 1.0, 2.0, 3.0, 4.0, 0.9)
     assert det.filename == "a.jpg"
+
+
+class _FixedBoxModel:
+    """Always returns the same single box, whatever `source` is -- used to
+    check what _detect_single actually hands the model when rotating."""
+
+    def __init__(self, xyxy, conf):
+        self.boxes = _FakeBoxes([xyxy], [conf])
+        self.received_sources = []
+
+    def predict(self, source, classes, verbose):
+        self.received_sources.append(source)
+        return [_FakeResult(self.boxes)]
+
+
+def test_detect_single_without_rotation_passes_the_file_path(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    frame = frames[0]  # 64x48 per the conftest fixture
+    model = _FixedBoxModel([1, 1, 5, 5], 0.9)
+
+    det = _detect_single(model, frame, rotate_degrees=0)
+
+    assert isinstance(model.received_sources[-1], str)
+    assert det.frame_width == 64
+    assert det.frame_height == 48
+
+
+def test_detect_single_with_90_degree_rotation_swaps_dimensions(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    frame = frames[0]  # 64x48
+    model = _FixedBoxModel([1, 1, 5, 5], 0.9)
+
+    det = _detect_single(model, frame, rotate_degrees=90)
+
+    # A rotated frame is handed over as an already-loaded image, not a path,
+    # and its dimensions are swapped relative to the file's own 64x48.
+    assert isinstance(model.received_sources[-1], Image.Image)
+    assert det.frame_width == 48
+    assert det.frame_height == 64
+
+
+def test_detect_single_with_180_degree_rotation_keeps_dimensions(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    frame = frames[0]  # 64x48
+    model = _FixedBoxModel([1, 1, 5, 5], 0.9)
+
+    det = _detect_single(model, frame, rotate_degrees=180)
+
+    assert det.frame_width == 64
+    assert det.frame_height == 48
+
+
+def test_cache_is_invalidated_when_rotation_setting_changes(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    model = _FakeModel({f.filename: [([0, 0, 10, 10], 0.5)] for f in frames})
+
+    run_detection(frames_folder, frames, model=model, use_cache=True, rotate_degrees=0)
+    assert model.predict_calls == len(frames)
+
+    # Same frames, same model, but a different rotation setting -- the old
+    # cache (built at rotate_degrees=0) must not be reused, since its box
+    # coordinates are in a different coordinate space.
+    model_rotated = _FakeModel({f.filename: [([0, 0, 10, 10], 0.5)] for f in frames})
+    run_detection(frames_folder, frames, model=model_rotated, use_cache=True, rotate_degrees=90)
+    assert model_rotated.predict_calls == len(frames)

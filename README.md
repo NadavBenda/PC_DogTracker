@@ -58,8 +58,18 @@ re-opening the same session is instant. A browser tab opens automatically at
 `http://127.0.0.1:5151/`.
 
 Useful flags: `--rescan` (ignore the cache and re-run detection on every
-frame), `--no-browser`, `--no-gui` (skip the Tk dialogs; requires passing a
-folder), `--port`, `-v`/`--verbose`.
+frame), `--rotate {90,180,270}` (if the camera is mounted rotated -- corrects
+both detection and the images shown in the dashboard; changing this
+invalidates the detection cache since box coordinates are in a different
+coordinate space), `--no-browser`, `--no-gui` (skip the Tk dialogs; requires
+passing a folder), `--port`, `-v`/`--verbose`.
+
+If detection comes back empty on real footage, `python debug_detect.py
+photo1.jpg photo2.jpg` (repo root) runs YOLOv8s directly on 1-3 images and
+prints every candidate object at any confidence (not just "dog"), plus saves
+an annotated copy -- it quickly tells you whether the model is missing the
+dog completely (focus/distance/lighting) or seeing it "almost" at a
+confidence just under the usual cutoff.
 
 ## Building DogTracker.exe (Windows only)
 
@@ -110,7 +120,8 @@ The companion sketch that produces the SD card data this tool analyzes:
   shuts down completely and only SD recording continues at the full rate.
 - **No RTC on the board.** If NTP synced, the session folder is renamed to
   a real `YYYYMMDD_HHMMSS` (local time -- see `TZ_OFFSET_SECONDS` in the
-  sketch, defaults to UTC+2); frames captured before that sync stay in the
+  sketch, currently UTC+3 for Israel Daylight Time; flip to UTC+2 in winter);
+  frames captured before that sync stay in the
   original boot-relative folder rather than being moved. If no network was
   reachable at all that boot, the folder keeps its boot-relative fallback
   name -- made collision-proof across power cycles by a boot counter
@@ -119,11 +130,11 @@ The companion sketch that produces the SD card data this tool analyzes:
   caused two different recordings to land in the same folder in testing).
 - No on-device detection -- that's what this PC tool is for. The ESP32
   only captures and saves frames. If detection comes back empty on real
-  footage, run `python debug_detect.py photo.jpg` (repo root) on a couple
-  of actual frames -- it shows every candidate object at any confidence
-  (not just "dog", and not filtered by the pipeline's threshold) and saves
-  an annotated copy, which quickly tells you whether it's a focus/distance/
-  lighting problem or something else.
+  footage, see `debug_detect.py` below.
+- Every 30 seconds, Serial prints a status line: the active session
+  folder, whether NTP time synced, frames captured so far, elapsed time,
+  free SD space, and -- while the network window is open -- a countdown
+  to when it closes.
 
 Verified with a real PlatformIO compile against `esp32-s3-devkitc-1`
 (Arduino framework) -- 15.2% RAM / 28.0% flash used, no warnings.

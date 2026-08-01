@@ -1,6 +1,8 @@
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from dogtracker_pc.detect import Detection
 from dogtracker_pc.frames import discover_frames
@@ -103,6 +105,38 @@ def test_path_traversal_is_blocked(client):
     c, _, _ = client
     res = c.get("/frames/..%2F..%2F..%2Fetc%2Fpasswd")
     assert res.status_code == 404
+
+
+def test_rotated_summary_swaps_frame_dimensions(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    app = create_app(frames_folder, frames, [], rotate_degrees=90)
+    c = app.test_client()
+    data = c.get("/api/summary").get_json()
+    assert data["frame_width"] == frames[0].height  # 48 -> width after a 90 deg turn
+    assert data["frame_height"] == frames[0].width  # 64 -> height after a 90 deg turn
+
+
+def test_rotated_frame_is_actually_rotated(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    app = create_app(frames_folder, frames, [], rotate_degrees=90)
+    c = app.test_client()
+
+    original_size = Image.open(frames[0].path).size  # (64, 48)
+    res = c.get(f"/frames/{frames[0].filename}")
+    assert res.status_code == 200
+    assert res.content_type == "image/jpeg"
+
+    served_size = Image.open(BytesIO(res.data)).size
+    assert served_size == (original_size[1], original_size[0])  # (48, 64)
+
+
+def test_unrotated_frame_uses_the_fast_send_from_directory_path(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    app = create_app(frames_folder, frames, [], rotate_degrees=0)
+    c = app.test_client()
+    res = c.get(f"/frames/{frames[0].filename}")
+    assert res.status_code == 200
+    assert Image.open(BytesIO(res.data)).size == (64, 48)
 
 
 def test_empty_session_has_zero_counts(tmp_path: Path):
