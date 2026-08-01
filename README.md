@@ -94,28 +94,39 @@ pytest
 
 The companion sketch that produces the SD card data this tool analyzes:
 
-- Captures JPEG frames continuously at **5 FPS** and saves each one to the
-  SD card as `/<session>/dog_<millis>.jpg` (point this tool at one session
-  folder, not the SD root). Recording stops cleanly once the card fills
-  up -- existing files are never overwritten or deleted.
-- For the **first 2 minutes only**, opens a Wi-Fi access point named
-  `WatchDog` (password `12345678`) and serves a 1 FPS MJPEG preview at
-  `http://192.168.4.1/`, so you can check camera placement/focus from a
-  phone before walking away. After 2 minutes the AP and HTTP server shut
-  down completely (no lingering open network) and only the 5 FPS SD
-  recording continues.
-- **No RTC on the board**, so the session folder starts out named from
-  milliseconds-since-boot. Opening `http://192.168.4.1/` during the AP
-  window sends your browser's clock to the board automatically, which
-  renames new frames' folder to a real `YYYYMMDD_HHMMSS` (local time --
-  see `TZ_OFFSET_SECONDS` in the sketch, defaults to UTC+2). Frames
-  captured before that sync stay in the original boot-relative folder
-  rather than being moved.
+- Captures JPEG frames continuously and saves each one to the SD card as
+  `/<session>/dog_<millis>.jpg` (point this tool at one session folder,
+  not the SD root). Baseline rate is **3 FPS**; it drops to **2 FPS**
+  while the network window (below) is open, so streaming doesn't have to
+  contend with SD writes for CPU/bandwidth. Recording stops cleanly once
+  the card fills up -- existing files are never overwritten or deleted.
+- At boot, tries to join one of a list of known home Wi-Fi networks (in
+  order, ~8s each) for up to **4 minutes**. If one connects: gets real
+  time via **NTP** automatically, and serves a live MJPEG preview *and* a
+  client-side **focus-score readout** at `http://<device-ip>/` -- a
+  live-updating sharpness number (computed in the browser, no server load)
+  so you can watch it while turning the lens's physical focus ring. After
+  the window (or immediately, if no known network was reachable), Wi-Fi
+  shuts down completely and only SD recording continues at the full rate.
+- **No RTC on the board.** If NTP synced, the session folder is renamed to
+  a real `YYYYMMDD_HHMMSS` (local time -- see `TZ_OFFSET_SECONDS` in the
+  sketch, defaults to UTC+2); frames captured before that sync stay in the
+  original boot-relative folder rather than being moved. If no network was
+  reachable at all that boot, the folder keeps its boot-relative fallback
+  name -- made collision-proof across power cycles by a boot counter
+  persisted on the SD card (`millis()` alone resets every reboot and isn't
+  reliably unique if boot timing is consistent, which is exactly what
+  caused two different recordings to land in the same folder in testing).
 - No on-device detection -- that's what this PC tool is for. The ESP32
-  only captures and saves frames.
+  only captures and saves frames. If detection comes back empty on real
+  footage, run `python debug_detect.py photo.jpg` (repo root) on a couple
+  of actual frames -- it shows every candidate object at any confidence
+  (not just "dog", and not filtered by the pipeline's threshold) and saves
+  an annotated copy, which quickly tells you whether it's a focus/distance/
+  lighting problem or something else.
 
 Verified with a real PlatformIO compile against `esp32-s3-devkitc-1`
-(Arduino framework) -- 14.9% RAM / 27.8% flash used, no warnings.
+(Arduino framework) -- 15.2% RAM / 28.0% flash used, no warnings.
 
 **Before flashing, confirm the SD card wiring.** The sketch assumes
 SD_MMC 1-bit mode on GPIO39 (CLK), GPIO38 (CMD), GPIO40 (D0) -- a common
@@ -123,6 +134,10 @@ pinout for this class of board, but unverified against your specific
 board's schematic. If it's wrong, `SD_MMC.begin()` fails loudly over
 Serial at boot (nothing gets damaged) -- update `SD_MMC_CLK_PIN` /
 `SD_MMC_CMD_PIN` / `SD_MMC_D0_PIN` at the top of the sketch and reflash.
+
+**Wi-Fi networks are hardcoded** in `WIFI_CANDIDATES` near the top of the
+sketch -- edit that list for your own network name(s)/password(s) before
+flashing.
 
 Arduino IDE board settings:
 - Board: **ESP32S3 Dev Module**

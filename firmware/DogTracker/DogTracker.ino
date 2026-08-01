@@ -1,22 +1,25 @@
 /*
  * DogTracker ESP32-S3 firmware
  * ------------------------------------------------------------------
- * - Continuously captures JPEG frames at ~5 FPS and saves them to the
- *   SD card as /<session>/dog_<millis>.jpg (compatible with the
- *   PC_DogTracker analysis tool's filename parser -- point it at one
- *   session folder, not the SD root).
- * - For the first AP_WINDOW_MS milliseconds (default 2 minutes) only,
- *   opens a Wi-Fi access point named "WatchDog" and serves a slow
- *   (default 1 FPS) MJPEG preview at http://192.168.4.1/ so you can
- *   confirm camera placement/focus from a phone or laptop. After that
- *   window the AP and HTTP server are shut down completely and only SD
- *   recording continues.
- * - The board has no RTC, so the session folder starts out named from
- *   ms-since-boot. Opening http://192.168.4.1/ during the AP window
- *   sends the browser's clock to /settime automatically, which renames
- *   new frames' folder to a real "YYYYMMDD_HHMMSS" (local time, see
- *   TZ_OFFSET_SECONDS) -- frames captured before that sync stay in the
- *   original boot-relative folder rather than being moved.
+ * - Continuously captures JPEG frames and saves them to the SD card as
+ *   /<session>/dog_<millis>.jpg (compatible with the PC_DogTracker
+ *   analysis tool's filename parser -- point it at one session folder,
+ *   not the SD root). Baseline rate is CAPTURE_FPS; while the network
+ *   window (below) is open, the rate drops to PREVIEW_CAPTURE_FPS to
+ *   leave headroom for streaming instead of contending with it.
+ * - At boot, tries to join one of WIFI_CANDIDATES (home Wi-Fi networks,
+ *   in order) for up to NETWORK_WINDOW_MS. If one connects: gets real
+ *   time via NTP automatically (renaming the session folder to a real
+ *   "YYYYMMDD_HHMMSS"), and serves a live MJPEG preview + a client-side
+ *   focus-score readout at http://<device-ip>/ so you can check camera
+ *   placement and physical focus. After the window (or immediately, if
+ *   no known network was reachable), Wi-Fi is shut down completely and
+ *   only SD recording continues at the full baseline rate.
+ * - The board has no RTC, so if no network/NTP is available that boot,
+ *   the session folder keeps a boot-relative fallback name instead --
+ *   made collision-proof across power cycles via a boot counter
+ *   persisted on the SD card (millis() alone resets every reboot and
+ *   isn't reliably unique if boot timing is consistent).
  * - Recording stops (cleanly) once the SD card runs out of space;
  *   existing frames are never overwritten or deleted.
  *
@@ -51,27 +54,35 @@
 #include <sys/time.h>
 
 // ======================================================
-// Wi-Fi access point (first AP_WINDOW_MS only)
+// Home Wi-Fi networks to try, in order, each for up to
+// WIFI_CONNECT_TIMEOUT_MS. First one that connects wins. If none do,
+// networking is skipped entirely for this boot -- recording still
+// proceeds normally, just without a live preview or NTP time.
 // ======================================================
-const char *AP_SSID = "WatchDog";
-const char *AP_PASSWORD = "12345678"; // WPA2 minimum is 8 characters
-const uint32_t AP_WINDOW_MS = 2UL * 60UL * 1000UL; // 2 minutes
+struct WifiCandidate {
+  const char *ssid;
+  const char *password;
+};
+const WifiCandidate WIFI_CANDIDATES[] = {
+  { "hevraty", "hevraty321" },
+  { "Nitsan", "0503332262" },
+};
+const uint32_t WIFI_CONNECT_TIMEOUT_MS = 8000;
+const uint32_t NETWORK_WINDOW_MS = 4UL * 60UL * 1000UL; // 4 minutes of preview/NTP once connected
 
 // ======================================================
 // Frame rates
 // ======================================================
-const uint32_t CAPTURE_FPS = 5;
-const uint32_t CAPTURE_INTERVAL_MS = 1000 / CAPTURE_FPS;
-const uint32_t PREVIEW_FPS_DIVISOR = 5; // 5 FPS / 5 = 1 FPS preview stream
+const uint32_t CAPTURE_FPS = 3;         // baseline, once the network window is closed (or never opened)
+const uint32_t PREVIEW_CAPTURE_FPS = 2; // reduced rate while the network window is open, to leave
+                                         // headroom for the camera+SD+Wi-Fi to not contend with each other
 
 // ======================================================
-// Time sync -- the board has no RTC, so it only knows "ms since boot"
-// until something with a correct clock tells it otherwise. Opening
-// http://192.168.4.1/ from a phone/PC during the AP window sends the
-// browser's clock automatically (see index_handler); if that never
-// happens, the session folder just keeps its boot-relative name.
-// TZ_OFFSET_SECONDS only affects the human-readable folder name, not
-// any recorded data -- adjust for your timezone / daylight saving.
+// Time sync -- the board has no RTC. If a known Wi-Fi network is
+// reachable at boot, NTP gives it real time automatically (see
+// syncTimeViaNtp()); otherwise the session folder keeps its
+// boot-relative fallback name for that recording. TZ_OFFSET_SECONDS
+// only affects the human-readable folder name, not any recorded data.
 // ======================================================
 const long TZ_OFFSET_SECONDS = 2L * 3600L; // assumes Israel Standard Time (UTC+2); +3h in DST
 
@@ -126,8 +137,10 @@ static SemaphoreHandle_t previewReady;
 static uint8_t *previewBuf = NULL;
 static size_t previewLen = 0;
 static size_t previewCapacity = 0;
+static volatile uint32_t previewSeq = 0; // bumped each time previewBuf's content changes
 
-static volatile bool apWindowOpen = true;
+static volatile bool networkWindowOpen = false;
+static uint32_t networkWindowStart = 0;
 static volatile bool sdFull = false;
 static uint32_t frameCounter = 0;
 
@@ -140,10 +153,10 @@ const uint32_t SD_SPACE_CHECK_EVERY_N_FRAMES = 25;
 
 // ======================================================
 // Current session folder -- frames go to "<currentSessionDir>/dog_<millis>.jpg".
-// Starts as a boot-relative name; /settime switches it (for new frames
-// only, see closeApWindow()'s comment) to one named from the real start
-// time once a clock is available. Guarded by sessionDirMutex since the
-// capture task and the HTTP settime handler run in different tasks.
+// Starts as a boot-relative name; syncTimeViaNtp() switches it (for new
+// frames only -- see its comment) to one named from the real start time
+// if NTP succeeds. Guarded by sessionDirMutex since the capture task and
+// setup()'s NTP sync run in different tasks.
 // ======================================================
 static SemaphoreHandle_t sessionDirMutex;
 static char currentSessionDir[40];
@@ -183,7 +196,7 @@ bool initCamera() {
     config.grab_mode    = CAMERA_GRAB_LATEST;
     config.fb_location  = CAMERA_FB_IN_PSRAM;
   } else {
-    Serial.println("WARNING: no PSRAM -- falling back to CIF capture, 5 FPS may not be sustainable");
+    Serial.println("WARNING: no PSRAM -- falling back to CIF capture, timings may not be sustainable");
     config.frame_size   = FRAMESIZE_CIF;
     config.jpeg_quality = 12;
     config.fb_count     = 1;
@@ -220,6 +233,33 @@ bool initSD() {
 }
 
 // ======================================================
+// Boot counter -- persisted on the SD card so the fallback session name
+// is unique across power cycles, not just within one. millis() alone
+// resets to 0 every reboot, so two boots with similar startup timing
+// (very common -- the init sequence takes about as long every time)
+// can otherwise land on the same boot-relative folder name.
+// ======================================================
+const char *BOOT_COUNTER_PATH = "/boot_count.txt";
+
+uint32_t nextBootCounter() {
+  uint32_t count = 0;
+  File in = SD_MMC.open(BOOT_COUNTER_PATH, FILE_READ);
+  if (in) {
+    count = (uint32_t)in.parseInt();
+    in.close();
+  }
+  count++;
+  File out = SD_MMC.open(BOOT_COUNTER_PATH, FILE_WRITE);
+  if (out) {
+    out.print(count);
+    out.close();
+  } else {
+    Serial.println("Warning: could not persist boot counter -- fallback names may collide across reboots.");
+  }
+  return count;
+}
+
+// ======================================================
 // Session folder management
 // ======================================================
 
@@ -239,26 +279,43 @@ void switchSessionFolder(const char *dir) {
 }
 
 void startBootRelativeSession() {
+  uint32_t bootNum = nextBootCounter();
   char dir[40];
-  snprintf(dir, sizeof(dir), "/session_%lu", (unsigned long)millis());
+  snprintf(dir, sizeof(dir), "/session_b%lu_%lu", (unsigned long)bootNum, (unsigned long)millis());
   switchSessionFolder(dir);
-  Serial.printf("Session folder: %s (boot-relative; will rename to a real timestamp if synced)\n", dir);
+  Serial.printf("Session folder: %s (boot-relative; will rename if NTP syncs)\n", dir);
 }
 
-// Called from the /settime HTTP handler once a browser/PC sends its clock.
-void onTimeSynced(time_t epochUtc) {
-  struct timeval tv = { .tv_sec = epochUtc, .tv_usec = 0 };
-  settimeofday(&tv, nullptr);
-  timeSynced = true;
+// Tries to get real time over NTP (only meaningful once Wi-Fi is up).
+// On success, renames new frames' folder to a real "YYYYMMDD_HHMMSS"
+// and returns true; on timeout, leaves the boot-relative name in place.
+bool syncTimeViaNtp(uint32_t timeoutMs) {
+  configTime(0, 0, "pool.ntp.org", "time.google.com", "time.nist.gov");
 
-  time_t localEpoch = epochUtc + TZ_OFFSET_SECONDS;
+  uint32_t start = millis();
+  time_t now = 0;
+  while (millis() - start < timeoutMs) {
+    time(&now);
+    if (now > 1700000000) { // sanity floor (~Nov 2023) -- rejects the pre-sync default clock value
+      break;
+    }
+    delay(200);
+  }
+  if (now <= 1700000000) {
+    Serial.println("NTP sync timed out -- keeping boot-relative session folder name.");
+    return false;
+  }
+
+  timeSynced = true;
+  time_t localEpoch = now + TZ_OFFSET_SECONDS;
   struct tm timeinfo;
   gmtime_r(&localEpoch, &timeinfo); // epoch already shifted, so treat as UTC to avoid needing a TZ database
 
   char dir[40];
   strftime(dir, sizeof(dir), "/%Y%m%d_%H%M%S", &timeinfo);
   switchSessionFolder(dir);
-  Serial.printf("Time synced -- new frames now saved under %s\n", dir);
+  Serial.printf("NTP time synced -- new frames now saved under %s\n", dir);
+  return true;
 }
 
 bool sdHasSpace() {
@@ -267,11 +324,14 @@ bool sdHasSpace() {
 }
 
 // ======================================================
-// Publish a frame to the preview stream (only called during the AP window)
+// Publish a frame to the preview stream (only called while the network
+// window is open). previewSeq lets the stream handler tell whether the
+// content actually changed since it last sent something, so it never
+// re-sends a stale frame while waiting for the next real one.
 // ======================================================
 void publishPreviewFrame(camera_fb_t *fb) {
   if (xSemaphoreTake(previewMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
-    return; // stream handler is mid-read; skip this frame, no big deal at 1 FPS
+    return; // stream handler is mid-read; skip this frame, no big deal at a couple FPS
   }
   if (previewCapacity < fb->len) {
     free(previewBuf);
@@ -281,6 +341,7 @@ void publishPreviewFrame(camera_fb_t *fb) {
   if (previewBuf) {
     memcpy(previewBuf, fb->buf, fb->len);
     previewLen = fb->len;
+    previewSeq++;
   }
   xSemaphoreGive(previewMutex);
   xSemaphoreGive(previewReady);
@@ -288,13 +349,16 @@ void publishPreviewFrame(camera_fb_t *fb) {
 
 // ======================================================
 // Capture task: the sole owner of esp_camera_fb_get()/fb_return().
-// Runs forever at CAPTURE_FPS, saving every frame to SD, and -- only
-// while the AP window is open -- feeding a slower preview stream too.
+// Runs forever, saving every frame to SD at the current rate (slower
+// while the network window is open, so streaming isn't starved), and
+// -- only while that window is open -- feeding the preview stream too.
 // ======================================================
 void captureTask(void *pvParameters) {
   uint32_t nextFrameDue = millis();
 
   while (true) {
+    uint32_t intervalMs = 1000 / (networkWindowOpen ? PREVIEW_CAPTURE_FPS : CAPTURE_FPS);
+
     if (sdFull) {
       vTaskDelay(pdMS_TO_TICKS(1000)); // stopped cleanly; nothing left to do
       continue;
@@ -329,13 +393,13 @@ void captureTask(void *pvParameters) {
     }
 
     frameCounter++;
-    if (apWindowOpen && (frameCounter % PREVIEW_FPS_DIVISOR == 0)) {
+    if (networkWindowOpen) {
       publishPreviewFrame(fb);
     }
 
     esp_camera_fb_return(fb);
 
-    nextFrameDue += CAPTURE_INTERVAL_MS;
+    nextFrameDue += intervalMs;
     int32_t delayMs = (int32_t)(nextFrameDue - millis());
     if (delayMs > 0) {
       vTaskDelay(pdMS_TO_TICKS(delayMs));
@@ -347,7 +411,8 @@ void captureTask(void *pvParameters) {
 
 // ======================================================
 // HTTP stream handler -- reads from the shared preview buffer only,
-// never touches the camera driver directly.
+// never touches the camera driver directly. Skips re-sending a frame
+// whose sequence number hasn't changed since the last one we sent.
 // ======================================================
 static esp_err_t stream_handler(httpd_req_t *req) {
   esp_err_t res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
@@ -356,7 +421,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   }
 
   char part_buf[64];
-  while (apWindowOpen) {
+  uint32_t lastSentSeq = 0;
+  while (networkWindowOpen) {
     if (xSemaphoreTake(previewReady, pdMS_TO_TICKS(2000)) != pdTRUE) {
       continue; // no new frame yet, keep waiting while the window is open
     }
@@ -364,16 +430,21 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     if (xSemaphoreTake(previewMutex, portMAX_DELAY) != pdTRUE) {
       break;
     }
+    uint32_t seq = previewSeq;
     size_t len = previewLen;
-    uint8_t *copy = len ? (uint8_t *)malloc(len) : NULL;
-    if (copy) {
-      memcpy(copy, previewBuf, len);
+    uint8_t *copy = NULL;
+    if (seq != lastSentSeq && len) {
+      copy = (uint8_t *)malloc(len);
+      if (copy) {
+        memcpy(copy, previewBuf, len);
+      }
     }
     xSemaphoreGive(previewMutex);
 
     if (!copy) {
-      continue;
+      continue; // nothing new since the last frame we actually sent
     }
+    lastSentSeq = seq;
 
     size_t hlen = snprintf(part_buf, sizeof(part_buf), _STREAM_PART, (unsigned)len);
     res = httpd_resp_send_chunk(req, part_buf, hlen);
@@ -392,39 +463,47 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return ESP_OK;
 }
 
-// GET /settime?epoch=<unix_seconds> -- sets the board's clock and switches
-// the active session folder to one named from that real time. Called
-// automatically by index_handler's page; can also be hit manually, e.g.
-// from a phone browser: http://192.168.4.1/settime?epoch=1737000000
-static esp_err_t settime_handler(httpd_req_t *req) {
-  char query[64];
-  char epochStr[24];
-  if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
-      httpd_query_key_value(query, "epoch", epochStr, sizeof(epochStr)) != ESP_OK) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing epoch query param");
-    return ESP_OK;
+// GET / -- the live preview page. Draws the streamed frame onto a hidden
+// canvas a couple times a second and computes a Laplacian-variance-style
+// sharpness score client-side (cheap enough for a phone browser), so you
+// can watch the number while turning the lens's physical focus ring.
+static const char INDEX_HTML[] = R"HTML(<!doctype html><html><body style="margin:0;background:#000;color:#0f0;font-family:monospace">
+<div id="score" style="position:absolute;top:4px;left:4px;font-size:20px;background:rgba(0,0,0,0.5);padding:4px 8px">focus score: --</div>
+<img id="s" src="/stream" style="width:100%;display:block">
+<canvas id="c" style="display:none"></canvas>
+<script>
+var img = document.getElementById('s');
+var canvas = document.getElementById('c');
+var ctx = canvas.getContext('2d', { willReadFrequently: true });
+var scoreEl = document.getElementById('score');
+function computeFocusScore() {
+  if (!img.naturalWidth) { return; }
+  var w = 160, h = Math.round(160 * img.naturalHeight / img.naturalWidth);
+  canvas.width = w; canvas.height = h;
+  ctx.drawImage(img, 0, 0, w, h);
+  var data;
+  try { data = ctx.getImageData(0, 0, w, h).data; } catch (e) { return; }
+  var gray = new Float32Array(w * h);
+  for (var i = 0; i < w * h; i++) {
+    var o = i * 4;
+    gray[i] = 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2];
   }
-
-  time_t epoch = (time_t)atol(epochStr);
-  if (epoch < 1700000000) { // sanity floor (~Nov 2023) -- rejects 0/garbage values
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "epoch out of range");
-    return ESP_OK;
+  var sum = 0, sumSq = 0, n = 0;
+  for (var y = 1; y < h - 1; y++) {
+    for (var x = 1; x < w - 1; x++) {
+      var idx = y * w + x;
+      var lap = -4 * gray[idx] + gray[idx - 1] + gray[idx + 1] + gray[idx - w] + gray[idx + w];
+      sum += lap; sumSq += lap * lap; n++;
+    }
   }
-
-  onTimeSynced(epoch);
-  httpd_resp_set_type(req, "text/plain");
-  httpd_resp_sendstr(req, "ok");
-  return ESP_OK;
+  var mean = sum / n;
+  var variance = sumSq / n - mean * mean;
+  scoreEl.textContent = 'focus score: ' + Math.round(variance) + ' (higher = sharper; turn the lens and watch this)';
 }
-
-// GET / -- the live preview page. Also sends the browser's own clock to
-// /settime on load, so just opening this page (during the AP window)
-// both lets you check the camera and syncs the board's time.
-static const char INDEX_HTML[] =
-    "<!doctype html><html><body style=\"margin:0;background:#000\">"
-    "<img src=\"/stream\" style=\"width:100%;display:block\">"
-    "<script>fetch('/settime?epoch=' + Math.floor(Date.now() / 1000)).catch(function(){});</script>"
-    "</body></html>";
+setInterval(computeFocusScore, 500);
+</script>
+</body></html>
+)HTML";
 
 static esp_err_t index_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
@@ -442,12 +521,6 @@ void startCameraServer() {
     .handler = stream_handler,
     .user_ctx = NULL
   };
-  httpd_uri_t settime_uri = {
-    .uri = "/settime",
-    .method = HTTP_GET,
-    .handler = settime_handler,
-    .user_ctx = NULL
-  };
   httpd_uri_t index_uri = {
     .uri = "/",
     .method = HTTP_GET,
@@ -457,25 +530,50 @@ void startCameraServer() {
 
   if (httpd_start(&stream_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
-    httpd_register_uri_handler(stream_httpd, &settime_uri);
     httpd_register_uri_handler(stream_httpd, &index_uri);
   }
 }
 
+// Tries each known network in order, each for up to
+// WIFI_CONNECT_TIMEOUT_MS. Returns true (and stays connected) on the
+// first one that works; leaves Wi-Fi off if none do.
+bool connectToKnownWifi() {
+  WiFi.mode(WIFI_STA);
+  size_t count = sizeof(WIFI_CANDIDATES) / sizeof(WIFI_CANDIDATES[0]);
+  for (size_t i = 0; i < count; i++) {
+    const WifiCandidate &candidate = WIFI_CANDIDATES[i];
+    Serial.printf("Trying Wi-Fi \"%s\"...\n", candidate.ssid);
+    WiFi.begin(candidate.ssid, candidate.password);
+
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
+      delay(250);
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("Connected to \"%s\", IP: %s\n", candidate.ssid, WiFi.localIP().toString().c_str());
+      return true;
+    }
+    WiFi.disconnect(true);
+    delay(100);
+  }
+  Serial.println("No known Wi-Fi network reachable -- skipping preview/NTP, recording at full rate.");
+  return false;
+}
+
 // ======================================================
-// Shut the AP + HTTP server down once the preview window elapses
+// Shut Wi-Fi + the HTTP server down once the network window elapses
 // ======================================================
-void closeApWindow() {
-  apWindowOpen = false;
+void closeNetworkWindow() {
+  networkWindowOpen = false;
   xSemaphoreGive(previewReady); // wake the stream handler so it notices the window closed
 
   if (stream_httpd) {
     httpd_stop(stream_httpd);
     stream_httpd = NULL;
   }
-  WiFi.softAPdisconnect(true);
+  WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
-  Serial.println("AP window elapsed -- Wi-Fi and preview stream shut down. SD recording continues.");
+  Serial.println("Network window elapsed -- Wi-Fi and preview stream shut down. SD recording continues at full rate.");
 }
 
 void setup() {
@@ -491,7 +589,7 @@ void setup() {
   Serial.println();
 
   pinMode(STATUS_LED_PIN, OUTPUT);
-  digitalWrite(STATUS_LED_PIN, HIGH); // solid on while the AP window is open
+  digitalWrite(STATUS_LED_PIN, HIGH); // solid on while the network window is open
 
   if (!initCamera()) {
     Serial.println("Halting: camera init failed.");
@@ -508,27 +606,32 @@ void setup() {
   sessionDirMutex = xSemaphoreCreateMutex();
   startBootRelativeSession();
 
-  WiFi.softAP(AP_SSID, AP_PASSWORD);
-  Serial.print("Access point \"");
-  Serial.print(AP_SSID);
-  Serial.print("\" up at ");
-  Serial.println(WiFi.softAPIP());
-  startCameraServer();
-  Serial.println("Open http://192.168.4.1/ to preview and auto-sync the clock (or /stream for preview only)");
+  if (connectToKnownWifi()) {
+    syncTimeViaNtp(5000);
+    startCameraServer();
+    networkWindowOpen = true;
+    networkWindowStart = millis();
+    Serial.print("Preview + focus score: http://");
+    Serial.print(WiFi.localIP());
+    Serial.println("/");
+  } else {
+    networkWindowOpen = false;
+    digitalWrite(STATUS_LED_PIN, LOW);
+  }
 
   xTaskCreatePinnedToCore(captureTask, "captureTask", 8192, NULL, 1, NULL, 1);
 }
 
 void loop() {
-  if (apWindowOpen && millis() >= AP_WINDOW_MS) {
-    closeApWindow();
+  if (networkWindowOpen && millis() - networkWindowStart >= NETWORK_WINDOW_MS) {
+    closeNetworkWindow();
     digitalWrite(STATUS_LED_PIN, LOW);
   }
 
-  // Slow heartbeat blink once recording-only (post-AP) to show the board
-  // is alive; fast blink instead if the SD card has filled up.
+  // Slow heartbeat blink once recording-only (no network window active)
+  // to show the board is alive; fast blink instead if the SD card filled up.
   static uint32_t lastBlink = 0;
-  if (!apWindowOpen) {
+  if (!networkWindowOpen) {
     uint32_t period = sdFull ? 200 : 2000;
     if (millis() - lastBlink >= period) {
       lastBlink = millis();
