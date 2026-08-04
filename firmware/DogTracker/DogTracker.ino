@@ -71,6 +71,7 @@ struct WifiCandidate {
 const WifiCandidate WIFI_CANDIDATES[] = {
   { "hevraty", "hevraty321" },
   { "Nitsan", "0503332262" },
+  { "Ben_David", "78978978"},
 };
 const uint32_t WIFI_CONNECT_TIMEOUT_MS = 8000;
 const uint32_t NETWORK_WINDOW_MS = 4UL * 60UL * 1000UL; // 4 minutes of preview/NTP once connected
