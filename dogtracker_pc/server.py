@@ -19,6 +19,7 @@ from .analysis import (
     DEFAULT_TOP_AREAS_COUNT,
     build_heatmap,
     find_areas,
+    hull_polygon,
     segment_visits,
 )
 from .detect import Detection
@@ -162,6 +163,14 @@ def create_app(
                 "representative_index": mid,
             }
 
+        def area_hull(area) -> list[list[float]]:
+            points = [
+                (detections[di].x, detections[di].y)
+                for vi in area.visit_indices
+                for di in visits[vi].detection_indices
+            ]
+            return [[x, y] for x, y in hull_polygon(points)]
+
         # The dog's handful of preferred spots are the top `top_n` areas by
         # (visit_count, total_duration_ms) -- already how `areas` is sorted.
         # Everything else counted as a "visit" but outside those highlighted
@@ -177,7 +186,7 @@ def create_app(
                         "rank": rank,
                         "centroid_x": area.centroid_x,
                         "centroid_y": area.centroid_y,
-                        "radius_px": area.radius_px,
+                        "hull": area_hull(area),
                         "visit_count": area.visit_count,
                         "total_duration_ms": area.total_duration_ms,
                         "avg_duration_ms": area.avg_duration_ms,

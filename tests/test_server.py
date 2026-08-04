@@ -53,7 +53,7 @@ def test_areas_endpoint_ranks_and_includes_representative_frames(client):
     assert area["rank"] == 1
     assert area["visit_count"] == 1
     assert area["is_highlighted"] is True
-    assert area["radius_px"] > 0
+    assert len(area["hull"]) >= 3
     assert len(area["visits"]) == 1
     assert area["visits"][0]["representative_filename"] in {d.filename for d in dets}
     assert data["total_visit_duration_ms"] == area["total_duration_ms"]

@@ -1,6 +1,7 @@
 import numpy as np
+import pytest
 
-from dogtracker_pc.analysis import build_heatmap, find_areas, segment_visits
+from dogtracker_pc.analysis import build_heatmap, find_areas, hull_polygon, segment_visits
 from dogtracker_pc.detect import Detection
 
 
@@ -118,3 +119,34 @@ def test_find_areas_average_duration():
     area = areas[0]
     assert area.total_duration_ms == sum(visits[i].duration_ms for i in area.visit_indices)
     assert area.avg_duration_ms == area.total_duration_ms / area.visit_count
+
+
+def test_hull_polygon_encloses_a_square_of_points():
+    points = [(0, 0), (0, 100), (100, 0), (100, 100), (50, 50)]
+    hull = hull_polygon(points, pad_px=10)
+    assert len(hull) == 4
+    xs = [p[0] for p in hull]
+    ys = [p[1] for p in hull]
+    # Padded outward, so it must extend beyond the original square.
+    assert min(xs) < 0 and max(xs) > 100
+    assert min(ys) < 0 and max(ys) > 100
+
+
+def test_hull_polygon_single_point_falls_back_to_a_visible_shape():
+    hull = hull_polygon([(50, 50)], pad_px=10)
+    assert len(hull) >= 3
+    for x, y in hull:
+        assert ((x - 50) ** 2 + (y - 50) ** 2) ** 0.5 == pytest.approx(10, abs=0.5)
+
+
+def test_hull_polygon_collinear_points_falls_back_to_a_visible_shape():
+    hull = hull_polygon([(0, 0), (10, 0), (20, 0)], pad_px=5)
+    assert len(hull) >= 3
+    # Fallback polygon must have some vertical extent even though every
+    # input point had y=0, or it would still render as an invisible line.
+    ys = [p[1] for p in hull]
+    assert max(ys) - min(ys) > 0
+
+
+def test_hull_polygon_empty_input():
+    assert hull_polygon([]) == []

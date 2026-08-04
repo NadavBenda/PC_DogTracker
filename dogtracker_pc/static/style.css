@@ -14,6 +14,19 @@
   --critical: #d03b3b;
   --heat-100: #cde2fb;
   --heat-700: #0d366b;
+  /* Region identity colors -- categorical slots 2-7 (blue/slot-1 is already
+     the heatmap/accent hue, so region hulls start at orange to stay
+     distinct from it). */
+  --region-1: #eb6834;
+  --region-2: #1baf7a;
+  --region-3: #eda100;
+  --region-4: #e87ba4;
+  --region-5: #008300;
+  --region-6: #4a3aa7;
+  /* Trajectory time gradient: early -> mid -> late. */
+  --traj-start: #2a78d6;
+  --traj-mid: #4a3aa7;
+  --traj-end: #e34948;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -31,6 +44,15 @@
     --accent-strong: #86b6ef;
     --good: #0ca30c;
     --critical: #e66767;
+    --region-1: #d95926;
+    --region-2: #199e70;
+    --region-3: #c98500;
+    --region-4: #d55181;
+    --region-5: #008300;
+    --region-6: #9085e9;
+    --traj-start: #3987e5;
+    --traj-mid: #9085e9;
+    --traj-end: #e66767;
   }
 }
 
@@ -48,6 +70,15 @@
   --accent-strong: #86b6ef;
   --good: #0ca30c;
   --critical: #e66767;
+  --region-1: #d95926;
+  --region-2: #199e70;
+  --region-3: #c98500;
+  --region-4: #d55181;
+  --region-5: #008300;
+  --region-6: #9085e9;
+  --traj-start: #3987e5;
+  --traj-mid: #9085e9;
+  --traj-end: #e66767;
 }
 
 * {
@@ -175,7 +206,7 @@ header.top .folder {
 
 .main-grid {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(280px, 2fr);
+  grid-template-columns: 1fr 1fr;
   gap: 20px;
   align-items: start;
 }
@@ -214,7 +245,7 @@ header.top .folder {
   width: 100%;
   height: auto;
   display: block;
-  opacity: 0.85;
+  opacity: 0.6;
 }
 
 .legend {
@@ -231,6 +262,10 @@ header.top .folder {
   height: 8px;
   border-radius: 4px;
   background: linear-gradient(to right, var(--heat-100), var(--heat-700));
+}
+
+.legend .ramp.ramp-trajectory {
+  background: linear-gradient(to right, var(--traj-start), var(--traj-mid), var(--traj-end));
 }
 
 .ref-frame-row {
@@ -252,34 +287,26 @@ header.top .folder {
 .area-overlays {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
 }
 
-.area-overlay-circle {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  border: 2px solid var(--accent);
-  background: rgba(42, 120, 214, 0.15);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: auto;
-  cursor: pointer;
+.area-overlays svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
-.area-overlay-label {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--accent);
-  background: var(--surface-1);
-  border-radius: 50%;
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 0 0 1px var(--border);
+.area-hull {
+  fill-opacity: 0.18;
+  stroke-width: 2.5;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.area-hull:hover {
+  fill-opacity: 0.3;
 }
 
 .areas-overview {
@@ -307,6 +334,7 @@ header.top .folder {
 
 .area-card {
   border: 1px solid var(--border);
+  border-left: 4px solid var(--region-color, var(--accent));
   border-radius: 8px;
   padding: 12px;
   background: var(--page);
@@ -323,6 +351,7 @@ header.top .folder {
 .area-card-title {
   font-size: 14px;
   font-weight: 600;
+  color: var(--region-color, var(--text-primary));
 }
 
 .area-card-location {

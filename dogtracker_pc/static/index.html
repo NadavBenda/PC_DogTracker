@@ -120,6 +120,19 @@
         </table>
       </div>
     </div>
+
+    <div class="card" id="trajectoryCard" hidden>
+      <h2>Movement path over time</h2>
+      <div class="heatmap-stage" id="trajectoryStage">
+        <img class="base-frame" id="trajectoryBaseFrame" alt="Reference camera frame" />
+        <canvas id="trajectoryCanvas"></canvas>
+      </div>
+      <div class="legend">
+        <span>Earlier</span>
+        <span class="ramp ramp-trajectory"></span>
+        <span>Later</span>
+      </div>
+    </div>
   </div>
 </div>
 <script src="/static/app.js"></script>

@@ -14,23 +14,31 @@ footage -- generated for illustration purposes, see below.)*
 
 ## What you get
 
-- **Visit heatmap** overlaid on a frame from the middle of the session (a
-  more representative "what does this scene normally look like" reference
-  than frame 0); pick any other frame as the background with one click.
+- **Visit heatmap** and **frame browser** side by side (each half the
+  screen), overlaid on a frame from the middle of the session (a more
+  representative "what does this scene normally look like" reference than
+  frame 0); pick any other frame as the background with one click. The frame
+  browser marks the dog's exact center point too, not just its bounding box,
+  matching the point the heatmap and regions are built from.
 - **Preferred locations** -- the dog's handful of regular spots (e.g. a
-  doghouse, a water bowl), drawn as circles right on the heatmap image, each
-  numbered and sized to the area it actually covers. Per region: how many
-  times it was visited, the length of every individual visit, and the total
-  time spent there. A summary line splits total tracked time into "in a
-  highlighted region" vs. "elsewhere (in transit)" -- time spent moving
-  between spots rather than dwelling in one of them.
+  doghouse, a water bowl), each outlined as its own colored **convex hull**
+  directly on the heatmap image (one color per region, matching that
+  region's heading below). Per region: how many times it was visited, the
+  length of every individual visit, and the total time spent there. A
+  summary line splits total tracked time into "in a highlighted region" vs.
+  "elsewhere (in transit)" -- time spent moving between spots rather than
+  dwelling in one of them.
+- **Movement path over time** -- a smooth spline through every detected
+  position in chronological order, colored gradually from one color (earlier)
+  to another (later), so the dog's actual route -- not just where it
+  stopped -- is visible at a glance.
 - **Frame browser** scrubs through every recorded frame, not just the ones
   with a detection -- frames with no dog show "No detection" instead of a
   box, so you can review the full sequence for continuity. A clickable
   **detection-presence ruler** below the scrubber shows at a glance which
   parts of the session had a dog detected (colored) vs not (empty).
 - **Click-to-jump** everywhere: click a point on the heatmap, a row in the
-  visits table, a region circle, or a thumbnail in a region's visit strip,
+  visits table, a region's outline, or a thumbnail in a region's visit strip,
   and the frame browser jumps straight to it.
 - **Adjustable thresholds** (dwell radius, gap tolerance, area radius,
   heatmap smoothing, how many regions to highlight) recompute the

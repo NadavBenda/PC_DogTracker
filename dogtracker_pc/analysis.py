@@ -7,6 +7,7 @@ opaque", never as a multi-hue rainbow.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -20,10 +21,10 @@ DEFAULT_TIME_GAP_THRESHOLD_MS = 3000
 DEFAULT_BLUR_RADIUS_PX = 15
 DEFAULT_AREA_RADIUS_PX = 60.0
 DEFAULT_TOP_AREAS_COUNT = 3
-# Floor for the on-screen circle drawn around an area: a single tightly
-# clustered visit would otherwise compute a near-zero spread and render as an
-# invisible dot.
-MIN_AREA_DISPLAY_RADIUS_PX = 25.0
+# Convex hulls are padded outward by this many pixels so the polygon visibly
+# encloses the detections that produced it instead of hugging their exact
+# pixels.
+AREA_HULL_PAD_PX = 14.0
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,6 @@ class Area:
 
     centroid_x: float
     centroid_y: float
-    radius_px: float
     visit_count: int
     total_duration_ms: int
     avg_duration_ms: float
@@ -148,24 +148,10 @@ def find_areas(visits: Sequence[Visit], area_radius_px: float = DEFAULT_AREA_RAD
             best_cluster["total_duration_ms"] += visit.duration_ms
             best_cluster["members"].append(i)
 
-    def cluster_radius(cluster: dict) -> float:
-        # How far the member visits actually spread around the final
-        # (weighted) centroid -- used to size the circle drawn on screen, not
-        # for clustering itself (that already happened above).
-        spread = max(
-            (
-                ((visits[i].centroid_x - cluster["cx"]) ** 2 + (visits[i].centroid_y - cluster["cy"]) ** 2) ** 0.5
-                for i in cluster["members"]
-            ),
-            default=0.0,
-        )
-        return max(spread, MIN_AREA_DISPLAY_RADIUS_PX)
-
     areas = [
         Area(
             centroid_x=c["cx"],
             centroid_y=c["cy"],
-            radius_px=cluster_radius(c),
             visit_count=len(c["members"]),
             total_duration_ms=c["total_duration_ms"],
             avg_duration_ms=c["total_duration_ms"] / len(c["members"]),
@@ -175,6 +161,73 @@ def find_areas(visits: Sequence[Visit], area_radius_px: float = DEFAULT_AREA_RAD
     ]
     areas.sort(key=lambda a: (a.visit_count, a.total_duration_ms), reverse=True)
     return areas
+
+
+def _cross(o: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+def _convex_hull(points: Sequence[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Andrew's monotone-chain convex hull. Returns points in CCW order."""
+    pts = sorted(set(points))
+    if len(pts) < 3:
+        return pts
+
+    lower: list[tuple[float, float]] = []
+    for p in pts:
+        while len(lower) >= 2 and _cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+
+    upper: list[tuple[float, float]] = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and _cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+
+    return lower[:-1] + upper[:-1]
+
+
+def hull_polygon(
+    points: Sequence[tuple[float, float]], pad_px: float = AREA_HULL_PAD_PX
+) -> list[tuple[float, float]]:
+    """Convex hull of ``points``, padded outward so it visibly encloses them
+    instead of hugging the exact pixels they were detected at.
+
+    Degenerate input (a single point, or points that are all collinear so the
+    "hull" is just a line) falls back to a small polygon centered on the
+    points so there is still a visible shape to draw.
+    """
+    pts = [(float(x), float(y)) for x, y in points]
+    if not pts:
+        return []
+
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+
+    hull = _convex_hull(pts)
+    if len(hull) < 3:
+        spread = max((((p[0] - cx) ** 2 + (p[1] - cy) ** 2) ** 0.5 for p in pts), default=0.0)
+        radius = max(spread, pad_px)
+        steps = 8
+        return [
+            (
+                cx + radius * math.cos(2 * math.pi * k / steps),
+                cy + radius * math.sin(2 * math.pi * k / steps),
+            )
+            for k in range(steps)
+        ]
+
+    padded = []
+    for x, y in hull:
+        dx, dy = x - cx, y - cy
+        dist = (dx**2 + dy**2) ** 0.5
+        if dist < 1e-6:
+            padded.append((x, y))
+        else:
+            scale = (dist + pad_px) / dist
+            padded.append((cx + dx * scale, cy + dy * scale))
+    return padded
 
 
 # Sequential blue ramp, steps 100->700 from the shared reference palette
@@ -191,7 +244,7 @@ def _hex_to_rgb(h: str) -> tuple[int, int, int]:
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
-def _build_colormap(max_alpha: int = 235) -> np.ndarray:
+def _build_colormap(max_alpha: int = 255) -> np.ndarray:
     stops = np.array([_hex_to_rgb(h) for h in _BLUE_RAMP_HEX], dtype=np.float64)
     stop_positions = np.linspace(0.0, 1.0, len(stops))
     sample_positions = np.linspace(0.0, 1.0, 256)
@@ -199,9 +252,9 @@ def _build_colormap(max_alpha: int = 235) -> np.ndarray:
     lut = np.zeros((256, 4), dtype=np.uint8)
     for channel in range(3):
         lut[:, channel] = np.interp(sample_positions, stop_positions, stops[:, channel]).astype(np.uint8)
-    # Alpha uses sqrt easing so low-density spots (a single visit) stay
-    # visible instead of vanishing next to a much busier hotspot.
-    lut[:, 3] = (np.sqrt(sample_positions) * max_alpha).astype(np.uint8)
+    # Alpha uses aggressive easing (< sqrt) so even lightly-visited spots read
+    # as solid and dark rather than a faint wash.
+    lut[:, 3] = (sample_positions**0.4 * max_alpha).astype(np.uint8)
     return lut
 
 
@@ -230,6 +283,21 @@ def _blur(grid: np.ndarray, radius: int) -> np.ndarray:
     return blurred
 
 
+# Each detection is stamped as a small filled disc rather than a single
+# pixel, so individual visits already read as a visible dot before the
+# smoothing blur is applied on top.
+_POINT_SPLAT_RADIUS_PX = 5
+
+
+def _stamp_point(grid: np.ndarray, xi: int, yi: int, radius: int) -> None:
+    height, width = grid.shape
+    y0, y1 = max(0, yi - radius), min(height, yi + radius + 1)
+    x0, x1 = max(0, xi - radius), min(width, xi + radius + 1)
+    yy, xx = np.ogrid[y0:y1, x0:x1]
+    mask = (xx - xi) ** 2 + (yy - yi) ** 2 <= radius * radius
+    grid[y0:y1, x0:x1][mask] += 1.0
+
+
 def build_heatmap(
     detections: Sequence[Detection],
     width: int,
@@ -244,7 +312,7 @@ def build_heatmap(
     for det in detections:
         xi = int(min(max(det.x, 0), width - 1))
         yi = int(min(max(det.y, 0), height - 1))
-        grid[yi, xi] += 1.0
+        _stamp_point(grid, xi, yi, _POINT_SPLAT_RADIUS_PX)
 
     if grid.max() > 0 and blur_radius > 0:
         grid = _blur(grid, blur_radius)

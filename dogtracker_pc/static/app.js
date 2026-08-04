@@ -210,9 +210,25 @@
     const by = Number(frameImg.dataset.y);
     const bw = Number(frameImg.dataset.w);
     const bh = Number(frameImg.dataset.h);
-    ctx.strokeStyle = "#2a78d6";
+
+    const styles = getComputedStyle(document.body);
+    const accent = styles.getPropertyValue("--accent").trim() || "#2a78d6";
+    const surface = styles.getPropertyValue("--surface-1").trim() || "#fcfcfb";
+
+    ctx.strokeStyle = accent;
     ctx.lineWidth = Math.max(2, Math.round(w / 200));
     ctx.strokeRect(bx - bw / 2, by - bh / 2, bw, bh);
+
+    // Center point -- the same position used as "the dog's location" for the
+    // heatmap and visits/areas, drawn here too so it reads as the same spot.
+    const dotRadius = Math.max(4, Math.round(w / 120));
+    ctx.beginPath();
+    ctx.arc(bx, by, dotRadius, 0, Math.PI * 2);
+    ctx.fillStyle = accent;
+    ctx.fill();
+    ctx.lineWidth = Math.max(2, Math.round(w / 300));
+    ctx.strokeStyle = surface;
+    ctx.stroke();
   }
 
   // ======================================================
@@ -358,43 +374,58 @@
     return wrap;
   }
 
-  // Circle overlays on the reference/heatmap image, one per highlighted
-  // area. Sized from the area's radius_px (spread of its member visits, or a
-  // visible-minimum floor) so the region actually looks like it encloses
-  // where the dog was, not just a point.
+  // Fixed count of distinct region colors (see --region-1..6 in style.css) --
+  // ranks past this wrap around, since "regions to highlight" tops out at 6.
+  const REGION_COLOR_COUNT = 6;
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  function regionColorVar(rank) {
+    const slot = ((rank - 1) % REGION_COLOR_COUNT) + 1;
+    return `var(--region-${slot})`;
+  }
+
+  // Convex-hull polygon overlays on the reference/heatmap image, one per
+  // highlighted area, each in its own color -- an SVG (not absolutely
+  // positioned divs) so the polygon points map directly onto frame pixel
+  // coordinates via viewBox, matching how the frame's own aspect ratio
+  // scales on screen.
   function renderAreaOverlays(areas) {
     const container = el("areaOverlays");
-    container.replaceChildren();
     const { frame_width, frame_height } = state.summary;
-    const highlighted = areas.filter((a) => a.is_highlighted);
+    const highlighted = areas.filter((a) => a.is_highlighted && a.hull.length >= 3);
+
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${frame_width} ${frame_height}`);
+    svg.setAttribute("preserveAspectRatio", "none");
 
     for (const area of highlighted) {
-      const circle = document.createElement("div");
-      circle.className = "area-overlay-circle";
-      circle.style.left = `${(area.centroid_x / frame_width) * 100}%`;
-      circle.style.top = `${(area.centroid_y / frame_height) * 100}%`;
-      circle.style.width = `${((2 * area.radius_px) / frame_width) * 100}%`;
-      circle.style.height = `${((2 * area.radius_px) / frame_height) * 100}%`;
-      circle.title = `Region ${area.rank} · ${area.visit_count} visit${area.visit_count === 1 ? "" : "s"}, ${formatElapsed(area.total_duration_ms)} total`;
+      const color = regionColorVar(area.rank);
+      const polygon = document.createElementNS(SVG_NS, "polygon");
+      polygon.setAttribute("points", area.hull.map(([x, y]) => `${x},${y}`).join(" "));
+      polygon.setAttribute("class", "area-hull");
+      polygon.style.stroke = color;
+      polygon.style.fill = color;
 
-      const label = document.createElement("span");
-      label.className = "area-overlay-label";
-      label.textContent = String(area.rank);
-      circle.appendChild(label);
+      const titleEl = document.createElementNS(SVG_NS, "title");
+      titleEl.textContent = `Region ${area.rank} · ${area.visit_count} visit${area.visit_count === 1 ? "" : "s"}, ${formatElapsed(area.total_duration_ms)} total`;
+      polygon.appendChild(titleEl);
 
       const jumpToIndex = frameIndexForDetectionIndex(area.visits[0].representative_index);
-      circle.addEventListener("click", (event) => {
+      polygon.addEventListener("click", (event) => {
         event.stopPropagation();
         setCurrentIndex(jumpToIndex);
       });
 
-      container.appendChild(circle);
+      svg.appendChild(polygon);
     }
+
+    container.replaceChildren(svg);
   }
 
   function areaCard(area) {
     const card = document.createElement("div");
     card.className = "area-card";
+    card.style.setProperty("--region-color", regionColorVar(area.rank));
 
     const header = document.createElement("div");
     header.className = "area-card-header";
@@ -470,8 +501,93 @@
   }
 
   function setReferenceFrame(filename) {
-    el("baseFrame").src = `/frames/${encodeURIComponent(filename)}`;
+    const src = `/frames/${encodeURIComponent(filename)}`;
+    el("baseFrame").src = src;
+    el("trajectoryBaseFrame").src = src;
     el("refFrameLabel").textContent = `Reference: ${filename}`;
+  }
+
+  function hexToRgb(hex) {
+    const h = hex.trim().replace("#", "");
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  }
+
+  function trajectoryColorAt(t, stops) {
+    for (let i = 0; i < stops.length - 1; i++) {
+      const a = stops[i];
+      const b = stops[i + 1];
+      if (t <= b.t) {
+        const localT = (t - a.t) / (b.t - a.t || 1);
+        return a.rgb.map((v, ch) => Math.round(v + (b.rgb[ch] - v) * localT));
+      }
+    }
+    return stops[stops.length - 1].rgb;
+  }
+
+  // The dog's full path, drawn as a Catmull-Rom spline through every
+  // detection center in chronological order, colored along its length from
+  // --traj-start (earliest) through --traj-mid to --traj-end (latest) so
+  // "when" is readable directly off the line, not just "where".
+  function renderTrajectory() {
+    const card = el("trajectoryCard");
+    const dets = state.detections;
+    if (dets.length === 0) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+
+    const { frame_width, frame_height } = state.summary;
+    const canvas = el("trajectoryCanvas");
+    canvas.width = frame_width;
+    canvas.height = frame_height;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, frame_width, frame_height);
+
+    const styles = getComputedStyle(document.body);
+    const stops = [
+      { t: 0, rgb: hexToRgb(styles.getPropertyValue("--traj-start") || "#2a78d6") },
+      { t: 0.5, rgb: hexToRgb(styles.getPropertyValue("--traj-mid") || "#4a3aa7") },
+      { t: 1, rgb: hexToRgb(styles.getPropertyValue("--traj-end") || "#e34948") },
+    ];
+
+    const n = dets.length;
+    ctx.lineWidth = Math.max(2, Math.round(frame_width / 220));
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    if (n === 1) {
+      const [r, g, b] = stops[0].rgb;
+      ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+      ctx.beginPath();
+      ctx.arc(dets[0].x, dets[0].y, ctx.lineWidth, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+
+    const pointAt = (i) => {
+      const idx = Math.max(0, Math.min(n - 1, i));
+      return [dets[idx].x, dets[idx].y];
+    };
+
+    for (let i = 0; i < n - 1; i++) {
+      const [x0, y0] = pointAt(i - 1);
+      const [x1, y1] = pointAt(i);
+      const [x2, y2] = pointAt(i + 1);
+      const [x3, y3] = pointAt(i + 2);
+      // Catmull-Rom -> cubic Bezier control points for the segment [P1, P2].
+      const cp1x = x1 + (x2 - x0) / 6;
+      const cp1y = y1 + (y2 - y0) / 6;
+      const cp2x = x2 - (x3 - x1) / 6;
+      const cp2y = y2 - (y3 - y1) / 6;
+
+      const [r, g, b] = trajectoryColorAt(i / (n - 2 || 1), stops);
+      ctx.strokeStyle = `rgb(${r}, ${g}, ${b})`;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
+      ctx.stroke();
+    }
   }
 
   function setupFilterControls() {
@@ -570,6 +686,7 @@
 
     await Promise.all([refreshVisits(), refreshAreas()]);
     refreshHeatmap();
+    renderTrajectory();
     setCurrentIndex(0);
   }
 
