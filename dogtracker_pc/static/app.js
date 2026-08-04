@@ -388,7 +388,9 @@
   // highlighted area, each in its own color -- an SVG (not absolutely
   // positioned divs) so the polygon points map directly onto frame pixel
   // coordinates via viewBox, matching how the frame's own aspect ratio
-  // scales on screen.
+  // scales on screen. Purely decorative (no pointer events): they sit on
+  // top of the heatmap, and capturing clicks there would shadow clicks on
+  // the heatmap's own points underneath.
   function renderAreaOverlays(areas) {
     const container = el("areaOverlays");
     const { frame_width, frame_height } = state.summary;
@@ -405,17 +407,6 @@
       polygon.setAttribute("class", "area-hull");
       polygon.style.stroke = color;
       polygon.style.fill = color;
-
-      const titleEl = document.createElementNS(SVG_NS, "title");
-      titleEl.textContent = `Region ${area.rank} · ${area.visit_count} visit${area.visit_count === 1 ? "" : "s"}, ${formatElapsed(area.total_duration_ms)} total`;
-      polygon.appendChild(titleEl);
-
-      const jumpToIndex = frameIndexForDetectionIndex(area.visits[0].representative_index);
-      polygon.addEventListener("click", (event) => {
-        event.stopPropagation();
-        setCurrentIndex(jumpToIndex);
-      });
-
       svg.appendChild(polygon);
     }
 
@@ -524,10 +515,40 @@
     return stops[stops.length - 1].rgb;
   }
 
+  // Fraction of the session elapsed at a given timestamp (0 at the first
+  // frame, 1 at the last) -- used for the trajectory's time gradient and its
+  // 0-10 tick marks, so both track wall-clock time rather than detection
+  // sample index (which would compress/stretch wherever detections happen
+  // to be denser or sparser).
+  function elapsedFractionOf(timestampMs) {
+    const duration = state.summary.duration_ms || 1;
+    return Math.min(1, Math.max(0, elapsedOf(timestampMs) / duration));
+  }
+
+  // Linearly interpolated (x, y) at a given elapsed-time fraction, between
+  // whichever two consecutive detections straddle that instant.
+  function positionAtElapsedFraction(dets, frac) {
+    const targetTs = state.summary.first_timestamp_ms + frac * (state.summary.duration_ms || 0);
+    if (targetTs <= dets[0].timestamp_ms) return [dets[0].x, dets[0].y];
+    for (let i = 0; i < dets.length - 1; i++) {
+      if (targetTs <= dets[i + 1].timestamp_ms) {
+        const span = dets[i + 1].timestamp_ms - dets[i].timestamp_ms;
+        const localT = span > 0 ? (targetTs - dets[i].timestamp_ms) / span : 0;
+        return [
+          dets[i].x + (dets[i + 1].x - dets[i].x) * localT,
+          dets[i].y + (dets[i + 1].y - dets[i].y) * localT,
+        ];
+      }
+    }
+    return [dets[dets.length - 1].x, dets[dets.length - 1].y];
+  }
+
   // The dog's full path, drawn as a Catmull-Rom spline through every
   // detection center in chronological order, colored along its length from
   // --traj-start (earliest) through --traj-mid to --traj-end (latest) so
-  // "when" is readable directly off the line, not just "where".
+  // "when" is readable directly off the line, not just "where". Numbered
+  // badges 0-10 mark every 10% of elapsed session time, matching the ticks
+  // under the legend below.
   function renderTrajectory() {
     const card = el("trajectoryCard");
     const dets = state.detections;
@@ -550,6 +571,7 @@
       { t: 0.5, rgb: hexToRgb(styles.getPropertyValue("--traj-mid") || "#4a3aa7") },
       { t: 1, rgb: hexToRgb(styles.getPropertyValue("--traj-end") || "#e34948") },
     ];
+    const surface = styles.getPropertyValue("--surface-1").trim() || "#fcfcfb";
 
     const n = dets.length;
     ctx.lineWidth = Math.max(2, Math.round(frame_width / 220));
@@ -562,31 +584,56 @@
       ctx.beginPath();
       ctx.arc(dets[0].x, dets[0].y, ctx.lineWidth, 0, Math.PI * 2);
       ctx.fill();
-      return;
+    } else {
+      const pointAt = (i) => {
+        const idx = Math.max(0, Math.min(n - 1, i));
+        return [dets[idx].x, dets[idx].y];
+      };
+
+      for (let i = 0; i < n - 1; i++) {
+        const [x0, y0] = pointAt(i - 1);
+        const [x1, y1] = pointAt(i);
+        const [x2, y2] = pointAt(i + 1);
+        const [x3, y3] = pointAt(i + 2);
+        // Catmull-Rom -> cubic Bezier control points for the segment [P1, P2].
+        const cp1x = x1 + (x2 - x0) / 6;
+        const cp1y = y1 + (y2 - y0) / 6;
+        const cp2x = x2 - (x3 - x1) / 6;
+        const cp2y = y2 - (y3 - y1) / 6;
+
+        const midT = (elapsedFractionOf(dets[i].timestamp_ms) + elapsedFractionOf(dets[i + 1].timestamp_ms)) / 2;
+        const [r, g, b] = trajectoryColorAt(midT, stops);
+        ctx.strokeStyle = `rgb(${r}, ${g}, ${b})`;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
+        ctx.stroke();
+      }
     }
 
-    const pointAt = (i) => {
-      const idx = Math.max(0, Math.min(n - 1, i));
-      return [dets[idx].x, dets[idx].y];
-    };
-
-    for (let i = 0; i < n - 1; i++) {
-      const [x0, y0] = pointAt(i - 1);
-      const [x1, y1] = pointAt(i);
-      const [x2, y2] = pointAt(i + 1);
-      const [x3, y3] = pointAt(i + 2);
-      // Catmull-Rom -> cubic Bezier control points for the segment [P1, P2].
-      const cp1x = x1 + (x2 - x0) / 6;
-      const cp1y = y1 + (y2 - y0) / 6;
-      const cp2x = x2 - (x3 - x1) / 6;
-      const cp2y = y2 - (y3 - y1) / 6;
-
-      const [r, g, b] = trajectoryColorAt(i / (n - 2 || 1), stops);
-      ctx.strokeStyle = `rgb(${r}, ${g}, ${b})`;
+    // 0-10 badges at every 10% of elapsed time, drawn last so they sit on
+    // top of the path lines.
+    const badgeRadius = Math.max(8, Math.round(frame_width / 45));
+    ctx.font = `${Math.round(badgeRadius * 1.1)}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (let k = 0; k <= 10; k++) {
+      const frac = k / 10;
+      const [x, y] = positionAtElapsedFraction(dets, frac);
+      const [r, g, b] = trajectoryColorAt(frac, stops);
       ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
+      ctx.arc(x, y, badgeRadius, 0, Math.PI * 2);
+      ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+      ctx.fill();
+      ctx.lineWidth = Math.max(1.5, badgeRadius / 8);
+      ctx.strokeStyle = surface;
       ctx.stroke();
+
+      // Pick black or white text by background luminance so the number
+      // stays legible across the whole blue -> violet -> red gradient.
+      const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+      ctx.fillStyle = luminance > 140 ? "#0b0b0b" : "#ffffff";
+      ctx.fillText(String(k), x, y + 1);
     }
   }
 

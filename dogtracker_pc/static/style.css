@@ -268,6 +268,24 @@ header.top .folder {
   background: linear-gradient(to right, var(--traj-start), var(--traj-mid), var(--traj-end));
 }
 
+.ramp-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ramp-col .ramp {
+  flex: none;
+  width: 100%;
+}
+
+.ramp-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-variant-numeric: tabular-nums;
+}
+
 .ref-frame-row {
   display: flex;
   align-items: center;
@@ -301,12 +319,7 @@ header.top .folder {
 .area-hull {
   fill-opacity: 0.18;
   stroke-width: 2.5;
-  cursor: pointer;
-  pointer-events: auto;
-}
-
-.area-hull:hover {
-  fill-opacity: 0.3;
+  pointer-events: none;
 }
 
 .areas-overview {
