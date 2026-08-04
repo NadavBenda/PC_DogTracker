@@ -71,6 +71,7 @@ struct WifiCandidate {
 const WifiCandidate WIFI_CANDIDATES[] = {
   { "hevraty", "hevraty321" },
   { "Nitsan", "0503332262" },
+  { "Ben_David", "78978978"},
 };
 const uint32_t WIFI_CONNECT_TIMEOUT_MS = 8000;
 const uint32_t NETWORK_WINDOW_MS = 4UL * 60UL * 1000UL; // 4 minutes of preview/NTP once connected
@@ -215,8 +216,8 @@ bool initCamera() {
   config.pixel_format = PIXFORMAT_JPEG;
 
   if (psramFound()) {
-    Serial.println("PSRAM found -- using VGA capture");
-    config.frame_size   = FRAMESIZE_VGA; // 640x480
+    Serial.println("PSRAM found -- using SXGA capture");
+    config.frame_size   = FRAMESIZE_SXGA; // 1280x1024 (~4x VGA's pixel count)
     config.jpeg_quality = 10;
     config.fb_count     = 3;
     config.grab_mode    = CAMERA_GRAB_LATEST;
