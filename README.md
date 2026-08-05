@@ -23,23 +23,27 @@ footage -- generated for illustration purposes, see below.)*
 - **Preferred locations** -- the dog's handful of regular spots (e.g. a
   doghouse, a water bowl), each outlined as its own colored **convex hull**
   directly on the heatmap image (one color per region, matching that
-  region's heading below). Per region: how many times it was visited, the
-  length of every individual visit, and the total time spent there. A
-  summary line splits total tracked time into "in a highlighted region" vs.
+  region's heading below, purely visual -- it doesn't block clicking on the
+  heatmap underneath). Per region: how many times it was visited, the length
+  of every individual visit, the total time spent there, and its own
+  clickable **presence timeline** (in the region's color) showing exactly
+  when across the whole session the dog was there vs elsewhere. A summary
+  line splits total tracked time into "in a highlighted region" vs.
   "elsewhere (in transit)" -- time spent moving between spots rather than
   dwelling in one of them.
 - **Movement path over time** -- a smooth spline through every detected
   position in chronological order, colored gradually from one color (earlier)
-  to another (later), so the dog's actual route -- not just where it
-  stopped -- is visible at a glance.
+  to another (later) by elapsed time, with numbered markers at every 10% of
+  the session so the dog's actual route -- not just where it stopped -- is
+  readable as a timeline.
 - **Frame browser** scrubs through every recorded frame, not just the ones
   with a detection -- frames with no dog show "No detection" instead of a
   box, so you can review the full sequence for continuity. A clickable
   **detection-presence ruler** below the scrubber shows at a glance which
   parts of the session had a dog detected (colored) vs not (empty).
 - **Click-to-jump** everywhere: click a point on the heatmap, a row in the
-  visits table, a region's outline, or a thumbnail in a region's visit strip,
-  and the frame browser jumps straight to it.
+  visits table, a region's presence timeline, or a thumbnail in a region's
+  visit strip, and the frame browser jumps straight to it.
 - **Adjustable thresholds** (dwell radius, gap tolerance, area radius,
   heatmap smoothing, how many regions to highlight) recompute the
   visits/regions/heatmap live.

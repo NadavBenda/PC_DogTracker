@@ -9,6 +9,7 @@
     frameIndexByFilename: new Map(),
     visits: [],
     currentIndex: 0,
+    currentHighlightedAreas: [],
   };
 
   const el = (id) => document.getElementById(id);
@@ -232,44 +233,76 @@
   }
 
   // ======================================================
-  // Detection-presence ruler: a clickable timeline showing which parts of
-  // the whole session had a dog detected (colored) vs not (empty), plus a
-  // marker for the currently-browsed frame. The coloring only needs
-  // recomputing when the data loads or the ruler resizes; the marker moves
-  // far more often, so it's a separate cheap overlay instead of a redraw.
+  // Presence ruler: a clickable timeline over the whole session showing
+  // which parts had some condition true (colored) vs not (empty). Used both
+  // for "a dog was detected at all" (the main ruler) and, per region, "the
+  // dog was in this specific region" -- same rendering, different predicate
+  // and color.
   // ======================================================
-  function renderDetectionRulerBackground() {
-    const canvas = el("detectionRuler");
+  function renderPresenceRuler(canvas, isPresentAtIndex, presentColorCss, height) {
     const width = Math.max(Math.round(canvas.getBoundingClientRect().width), 1);
-    const height = 22;
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext("2d");
 
-    const styles = getComputedStyle(document.body);
-    const emptyColor = styles.getPropertyValue("--gridline").trim() || "#e1e0d9";
-    const accentColor = styles.getPropertyValue("--accent").trim() || "#2a78d6";
-
+    const emptyColor = getComputedStyle(document.body).getPropertyValue("--gridline").trim() || "#e1e0d9";
     ctx.fillStyle = emptyColor;
     ctx.fillRect(0, 0, width, height);
 
     const total = state.frames.length;
     if (total === 0) return;
 
-    ctx.fillStyle = accentColor;
+    ctx.fillStyle = presentColorCss;
     for (let x = 0; x < width; x++) {
       const startIdx = Math.floor((x / width) * total);
       const endIdx = Math.max(startIdx + 1, Math.floor(((x + 1) / width) * total));
-      let hasDetection = false;
+      let present = false;
       for (let i = startIdx; i < endIdx && i < total; i++) {
-        if (state.detectionByFilename.has(state.frames[i].filename)) {
-          hasDetection = true;
+        if (isPresentAtIndex(i)) {
+          present = true;
           break;
         }
       }
-      if (hasDetection) {
+      if (present) {
         ctx.fillRect(x, 0, 1, height);
       }
+    }
+  }
+
+  // The coloring only needs recomputing when the data loads or the ruler
+  // resizes; the current-frame marker moves far more often, so it's a
+  // separate cheap overlay instead of a redraw (see updateRulerMarker).
+  function renderDetectionRulerBackground() {
+    const accentColor = getComputedStyle(document.body).getPropertyValue("--accent").trim() || "#2a78d6";
+    renderPresenceRuler(
+      el("detectionRuler"),
+      (i) => state.detectionByFilename.has(state.frames[i].filename),
+      accentColor,
+      22
+    );
+  }
+
+  // Per-region presence ruler: which parts of the whole session the dog
+  // spent inside this specific region, using the region's own visit time
+  // ranges (start_ts .. start_ts + duration_ms) rather than exact frames,
+  // since that's what /api/areas already reports per visit.
+  function renderAreaRuler(canvas, area) {
+    const intervals = area.visits.map((v) => [v.start_ts, v.start_ts + v.duration_ms]);
+    const isInRegion = (i) => {
+      const ts = state.frames[i].timestamp_ms;
+      return intervals.some(([start, end]) => ts >= start && ts <= end);
+    };
+    const styles = getComputedStyle(document.body);
+    const slot = ((area.rank - 1) % REGION_COLOR_COUNT) + 1;
+    const color = styles.getPropertyValue(`--region-${slot}`).trim() || "#2a78d6";
+    renderPresenceRuler(canvas, isInRegion, color, 14);
+  }
+
+  function redrawAreaRulers() {
+    const cards = el("areaList").children;
+    for (let i = 0; i < cards.length && i < state.currentHighlightedAreas.length; i++) {
+      const canvas = cards[i].querySelector(".area-ruler");
+      if (canvas) renderAreaRuler(canvas, state.currentHighlightedAreas[i]);
     }
   }
 
@@ -288,7 +321,13 @@
       setCurrentIndex(index);
     });
 
-    window.addEventListener("resize", debounce(renderDetectionRulerBackground, 150));
+    window.addEventListener(
+      "resize",
+      debounce(() => {
+        renderDetectionRulerBackground();
+        redrawAreaRulers();
+      }, 150)
+    );
   }
 
   function setupHeatmapInteraction() {
@@ -439,6 +478,35 @@
     lengths.className = "area-card-lengths";
     lengths.textContent = `Visit lengths: ${area.visits.map((v) => formatElapsed(v.duration_ms)).join(", ")}`;
 
+    // Mini presence ruler -- same idea as the main detection-presence ruler
+    // under the frame browser, scoped to just this region: colored (in this
+    // region's own color) where the dog was here, empty everywhere else
+    // across the whole session timeline. Drawn later, once the canvas is
+    // actually in the DOM and has a real width (see redrawAreaRulers).
+    const rulerWrap = document.createElement("div");
+    rulerWrap.className = "area-ruler-wrap";
+    const rulerCanvas = document.createElement("canvas");
+    rulerCanvas.className = "area-ruler";
+    rulerCanvas.addEventListener("click", (event) => {
+      const rect = rulerCanvas.getBoundingClientRect();
+      const frac = (event.clientX - rect.left) / rect.width;
+      setCurrentIndex(Math.round(frac * (state.frames.length - 1)));
+    });
+    rulerWrap.appendChild(rulerCanvas);
+
+    const rulerLegend = document.createElement("div");
+    rulerLegend.className = "ruler-legend";
+    const onSwatch = document.createElement("span");
+    onSwatch.className = "swatch";
+    onSwatch.style.background = regionColorVar(area.rank);
+    const onLabel = document.createElement("span");
+    onLabel.append(onSwatch, document.createTextNode("in this region"));
+    const offSwatch = document.createElement("span");
+    offSwatch.className = "swatch swatch-off";
+    const offLabel = document.createElement("span");
+    offLabel.append(offSwatch, document.createTextNode("elsewhere / not detected"));
+    rulerLegend.append(onLabel, offLabel);
+
     const strip = document.createElement("div");
     strip.className = "thumb-strip";
     strip.append(
@@ -451,7 +519,7 @@
       )
     );
 
-    card.append(header, headline, lengths, strip);
+    card.append(header, headline, lengths, rulerWrap, rulerLegend, strip);
     return card;
   }
 
@@ -459,6 +527,7 @@
     const card = el("areasCard");
     if (data.areas.length === 0) {
       card.hidden = true;
+      state.currentHighlightedAreas = [];
       renderAreaOverlays([]);
       return;
     }
@@ -471,7 +540,9 @@
       statTile("Elsewhere (in transit)", formatElapsed(data.elsewhere_duration_ms))
     );
 
+    state.currentHighlightedAreas = highlighted;
     el("areaList").replaceChildren(...highlighted.map(areaCard));
+    redrawAreaRulers();
     renderAreaOverlays(data.areas);
   }
 
