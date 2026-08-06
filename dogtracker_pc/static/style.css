@@ -268,6 +268,12 @@ header.top .folder {
   background: linear-gradient(to right, var(--traj-start), var(--traj-mid), var(--traj-end));
 }
 
+.trajectory-note {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .ramp-col {
   flex: 1;
   display: flex;
@@ -471,6 +477,7 @@ header.top .folder {
 }
 
 .area-ruler-wrap {
+  position: relative;
   margin: 8px 0 4px;
 }
 
@@ -480,6 +487,11 @@ header.top .folder {
   display: block;
   border-radius: 3px;
   cursor: pointer;
+}
+
+.area-ruler-marker {
+  top: -1px;
+  height: 16px;
 }
 
 .area-card .ruler-legend {

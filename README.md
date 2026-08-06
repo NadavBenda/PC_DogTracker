@@ -31,18 +31,21 @@ footage -- generated for illustration purposes, see below.)*
   visual -- it doesn't block clicking on the heatmap underneath); manual
   ones carry a "manual" badge and a Remove button, and persist in
   `.dogtracker_cache/manual_regions.json` so they're still there next time
-  you open the same folder. Per region: how many times it was visited, the
-  length of every individual visit, the total time spent there, and its own
-  clickable **presence timeline** (in the region's color) showing exactly
-  when across the whole session the dog was there vs elsewhere. A summary
-  line splits total tracked time into "in a highlighted region" vs.
-  "elsewhere (in transit)" -- time spent moving between spots rather than
-  dwelling in one of them.
+  you open the same folder. "Regions to highlight" goes down to 0 if you'd
+  rather see only manually-drawn regions and no automatic ones. Per region:
+  how many times it was visited, the length of every individual visit, the
+  total time spent there, and its own clickable **presence timeline** (in
+  the region's color, with the same current-frame marker line the frame
+  browser's own ruler has) showing exactly when across the whole session
+  the dog was there vs elsewhere. A summary line splits total tracked time
+  into "in a highlighted region" vs. "elsewhere (in transit)" -- time spent
+  moving between spots rather than dwelling in one of them.
 - **Movement path over time** -- a smooth spline through every detected
   position in chronological order, colored gradually from one color (earlier)
   to another (later) by elapsed time, with numbered markers at every 10% of
-  the session so the dog's actual route -- not just where it stopped -- is
-  readable as a timeline.
+  the session and arrow ticks every 5 minutes pointing in the direction of
+  travel at that instant, so the dog's actual route -- not just where it
+  stopped -- is readable as a timeline.
 - **Frame browser** scrubs through every recorded frame, not just the ones
   with a detection -- frames with no dog show "No detection" instead of a
   box, so you can review the full sequence for continuity. A clickable

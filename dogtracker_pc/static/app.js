@@ -178,6 +178,7 @@
       hideCurrentMarker();
     }
     updateRulerMarker();
+    updateAreaRulerMarkers();
     updateActiveVisitRow();
   }
 
@@ -326,10 +327,24 @@
     }
   }
 
+  function currentIndexFraction() {
+    const total = state.frames.length;
+    return total > 1 ? state.currentIndex / (total - 1) : 0;
+  }
+
   function updateRulerMarker() {
     const marker = el("rulerMarker");
-    const total = state.frames.length;
-    marker.style.left = total > 1 ? `${(state.currentIndex / (total - 1)) * 100}%` : "0%";
+    marker.style.left = `${currentIndexFraction() * 100}%`;
+  }
+
+  // Same idea as the main ruler's current-frame marker, mirrored onto every
+  // region's mini presence ruler so scrubbing the frame browser shows where
+  // "now" falls on each region's own timeline too.
+  function updateAreaRulerMarkers() {
+    const leftPct = `${currentIndexFraction() * 100}%`;
+    for (const marker of el("areaList").querySelectorAll(".area-ruler-marker")) {
+      marker.style.left = leftPct;
+    }
   }
 
   function setupRulerInteraction() {
@@ -647,7 +662,9 @@
       const frac = (event.clientX - rect.left) / rect.width;
       setCurrentIndex(Math.round(frac * (state.frames.length - 1)));
     });
-    rulerWrap.appendChild(rulerCanvas);
+    const rulerMarker = document.createElement("div");
+    rulerMarker.className = "ruler-marker area-ruler-marker";
+    rulerWrap.append(rulerCanvas, rulerMarker);
 
     const rulerLegend = document.createElement("div");
     rulerLegend.className = "ruler-legend";
@@ -693,6 +710,7 @@
     if (combined.length === 0) {
       card.hidden = true;
       state.currentHighlightedAreas = [];
+      el("areaList").replaceChildren();
       renderAreaOverlays([]);
       return;
     }
@@ -707,6 +725,7 @@
     state.currentHighlightedAreas = combined;
     el("areaList").replaceChildren(...combined.map(areaCard));
     redrawAreaRulers();
+    updateAreaRulerMarkers();
     renderAreaOverlays(combined);
   }
 
@@ -778,12 +797,43 @@
     return [dets[dets.length - 1].x, dets[dets.length - 1].y];
   }
 
+  const TRAJECTORY_ARROW_INTERVAL_MS = 5 * 60 * 1000;
+
+  // Direction of travel at a given elapsed-time fraction: the angle of the
+  // vector between a point shortly before and shortly after that instant
+  // (2s of session time on each side), not just the two nearest detections,
+  // so it stays stable even where detections are dense/jittery.
+  function directionAngleAtElapsedFraction(dets, frac, durationMs) {
+    const deltaFrac = durationMs > 0 ? 2000 / durationMs : 0;
+    const [x0, y0] = positionAtElapsedFraction(dets, Math.max(0, frac - deltaFrac));
+    const [x1, y1] = positionAtElapsedFraction(dets, Math.min(1, frac + deltaFrac));
+    return Math.atan2(y1 - y0, x1 - x0);
+  }
+
+  function drawDirectionArrow(ctx, x, y, angle, size, fillColor, ringColor) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(size, 0);
+    ctx.lineTo(-size * 0.6, size * 0.6);
+    ctx.lineTo(-size * 0.6, -size * 0.6);
+    ctx.closePath();
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1, size / 6);
+    ctx.strokeStyle = ringColor;
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // The dog's full path, drawn as a Catmull-Rom spline through every
   // detection center in chronological order, colored along its length from
   // --traj-start (earliest) through --traj-mid to --traj-end (latest) so
   // "when" is readable directly off the line, not just "where". Numbered
   // badges 0-10 mark every 10% of elapsed session time, matching the ticks
-  // under the legend below.
+  // under the legend below; arrow ticks every 5 minutes of wall-clock time
+  // show the direction of travel at that instant.
   function renderTrajectory() {
     const card = el("trajectoryCard");
     const dets = state.detections;
@@ -869,6 +919,18 @@
       const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
       ctx.fillStyle = luminance > 140 ? "#0b0b0b" : "#ffffff";
       ctx.fillText(String(k), x, y + 1);
+    }
+
+    // Direction-of-travel arrows every 5 minutes of elapsed wall-clock time
+    // (independent of the 0-10 badges above, which mark 10% steps).
+    const durationMs = state.summary.duration_ms || 0;
+    const arrowSize = Math.max(7, Math.round(frame_width / 55));
+    for (let ms = TRAJECTORY_ARROW_INTERVAL_MS; ms < durationMs; ms += TRAJECTORY_ARROW_INTERVAL_MS) {
+      const frac = ms / durationMs;
+      const [x, y] = positionAtElapsedFraction(dets, frac);
+      const angle = directionAngleAtElapsedFraction(dets, frac, durationMs);
+      const [r, g, b] = trajectoryColorAt(frac, stops);
+      drawDirectionArrow(ctx, x, y, angle, arrowSize, `rgb(${r}, ${g}, ${b})`, surface);
     }
   }
 
