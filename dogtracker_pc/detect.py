@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 # COCO class id for "dog" (the pretrained yolov8s.pt label set).
 DOG_CLASS_ID = 16
 
+# Below this, a box is not even considered a candidate dog (ultralytics'
+# own default is 0.25, which was letting through fur/hair-texture false
+# positives on real footage).
+MIN_DETECTION_CONFIDENCE = 0.35
+
 CACHE_DIRNAME = ".dogtracker_cache"
 CACHE_FILENAME = "detections.json"
 CACHE_VERSION = 1
@@ -124,11 +129,20 @@ def run_detection(
     the resulting box coordinates (and frame_width/frame_height, swapped for
     90/270) are in that rotated space -- server.py rotates frames the same
     way when serving them, so everything lines up consistently.
+
+    A per-frame detection only counts if an immediately adjacent frame (the
+    previous or next one in capture order -- position on screen doesn't
+    matter) also saw a dog. A stray single-frame false positive (a tuft of
+    fur, a lighting glitch) essentially never repeats in the very next
+    frame, while a real dog is in view for several frames in a row. This
+    filter is applied fresh every call, over the raw per-frame results --
+    the cache below still stores one raw (unfiltered) result per frame, so
+    it stays valid regardless of how this filter evolves later.
     """
     folder = Path(folder)
     frames = list(frames)
     cache = load_cache(folder, rotate_degrees) if use_cache else {}
-    detections: list[Detection] = []
+    raw_by_filename: dict[str, Optional[Detection]] = {}
     to_run: list[Frame] = []
 
     for frame in frames:
@@ -136,8 +150,7 @@ def run_detection(
         cached = cache.get(frame.filename)
         if cached is not None and cached.get("fingerprint") == fingerprint:
             det = cached.get("detection")
-            if det:
-                detections.append(Detection(**det))
+            raw_by_filename[frame.filename] = Detection(**det) if det else None
             continue
         to_run.append(frame)
 
@@ -151,12 +164,22 @@ def run_detection(
                 "fingerprint": _fingerprint(frame),
                 "detection": asdict(det) if det else None,
             }
-            if det:
-                detections.append(det)
+            raw_by_filename[frame.filename] = det
             if progress_cb:
                 progress_cb(done, total)
         if use_cache:
             save_cache(folder, cache, rotate_degrees)
+
+    raw_sequence = [raw_by_filename.get(frame.filename) for frame in frames]
+    detections = [
+        raw_sequence[i]
+        for i in range(len(raw_sequence))
+        if raw_sequence[i] is not None
+        and (
+            (i > 0 and raw_sequence[i - 1] is not None)
+            or (i + 1 < len(raw_sequence) and raw_sequence[i + 1] is not None)
+        )
+    ]
 
     detections.sort(key=lambda d: d.timestamp_ms)
     return detections
@@ -167,10 +190,12 @@ def _detect_single(model, frame: Frame, rotate_degrees: int = 0) -> Optional[Det
         with Image.open(frame.path) as img:
             source = img.convert("RGB").rotate(-rotate_degrees, expand=True)
         width, height = source.size
-        results = model.predict(source=source, classes=[DOG_CLASS_ID], verbose=False)
+        results = model.predict(source=source, classes=[DOG_CLASS_ID], verbose=False, conf=MIN_DETECTION_CONFIDENCE)
     else:
         width, height = frame.width, frame.height
-        results = model.predict(source=str(frame.path), classes=[DOG_CLASS_ID], verbose=False)
+        results = model.predict(
+            source=str(frame.path), classes=[DOG_CLASS_ID], verbose=False, conf=MIN_DETECTION_CONFIDENCE
+        )
 
     if not results:
         return None

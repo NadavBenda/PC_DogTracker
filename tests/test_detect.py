@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from dogtracker_pc.detect import Detection, _detect_single, load_cache, run_detection
+from dogtracker_pc.detect import MIN_DETECTION_CONFIDENCE, Detection, _detect_single, load_cache, run_detection
 from dogtracker_pc.frames import discover_frames
 
 
@@ -32,9 +32,11 @@ class _FakeModel:
     def __init__(self, boxes_by_filename: dict):
         self.boxes_by_filename = boxes_by_filename
         self.predict_calls = 0
+        self.received_confs = []
 
-    def predict(self, source, classes, verbose):
+    def predict(self, source, classes, verbose, conf=None):
         self.predict_calls += 1
+        self.received_confs.append(conf)
         if isinstance(source, (str, Path)):
             filename = Path(source).name
             entries = self.boxes_by_filename.get(filename, [])
@@ -52,23 +54,59 @@ class _FakeModel:
 def test_run_detection_picks_highest_confidence_box(frames_folder: Path):
     frames = discover_frames(frames_folder)
     first = frames[0].filename
+    second = frames[1].filename  # gives `first` an adjacent-frame confirmation
     model = _FakeModel(
         {
             first: [
                 ([10, 10, 20, 20], 0.4),
                 ([30, 20, 50, 60], 0.9),  # this one should win
-            ]
+            ],
+            second: [([0, 0, 5, 5], 0.5)],
         }
     )
     detections = run_detection(frames_folder, frames, model=model, use_cache=False)
-    assert len(detections) == 1
-    det = detections[0]
-    assert det.filename == first
+    det = next(d for d in detections if d.filename == first)
     assert det.confidence == 0.9
     assert det.x == 40.0  # (30+50)/2
     assert det.y == 40.0  # (20+60)/2
     assert det.w == 20.0
     assert det.h == 40.0
+
+
+def test_detect_single_passes_minimum_confidence_to_model(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    model = _FixedBoxModel([1, 1, 5, 5], 0.9)
+    _detect_single(model, frames[0], rotate_degrees=0)
+    assert model.received_confs[-1] == MIN_DETECTION_CONFIDENCE
+
+
+def test_run_detection_drops_isolated_single_frame_detections(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    # frames[0]: isolated (frames[1] has no dog) -> dropped.
+    # frames[2], frames[3]: a consecutive pair -> both kept.
+    # frames[5]: isolated at the end (frames[4] has no dog) -> dropped.
+    boxes = {
+        frames[0].filename: [([0, 0, 10, 10], 0.9)],
+        frames[2].filename: [([0, 0, 10, 10], 0.9)],
+        frames[3].filename: [([0, 0, 10, 10], 0.9)],
+        frames[5].filename: [([0, 0, 10, 10], 0.9)],
+    }
+    model = _FakeModel(boxes)
+    detections = run_detection(frames_folder, frames, model=model, use_cache=False)
+    assert {d.filename for d in detections} == {frames[2].filename, frames[3].filename}
+
+
+def test_run_detection_consecutive_confirmation_ignores_position(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    # Two adjacent frames both have a dog, but at very different positions --
+    # still confirmed, since confirmation is presence-only, not proximity-based.
+    boxes = {
+        frames[0].filename: [([0, 0, 5, 5], 0.9)],
+        frames[1].filename: [([200, 150, 210, 160], 0.9)],
+    }
+    model = _FakeModel(boxes)
+    detections = run_detection(frames_folder, frames, model=model, use_cache=False)
+    assert {d.filename for d in detections} == {frames[0].filename, frames[1].filename}
 
 
 def test_run_detection_skips_frames_with_no_dog(frames_folder: Path):
@@ -102,17 +140,28 @@ def test_cache_invalidated_when_file_changes(frames_folder: Path):
     run_detection(frames_folder, frames, model=model, use_cache=True)
     assert model.predict_calls == len(frames)
 
-    # Touch one frame's content (changes size -> fingerprint changes).
-    changed = frames[0].path
-    changed.write_bytes(changed.read_bytes() + b"\x00")
+    # Touch two adjacent frames' content (changes size -> fingerprint
+    # changes) so both need re-running -- both are given a detection so
+    # they confirm each other under the consecutive-frame requirement
+    # (a single re-run frame with no confirming neighbor would otherwise be
+    # dropped, muddying what this test is actually checking: that only the
+    # changed files get re-detected).
+    changed_a = frames[0].path
+    changed_a.write_bytes(changed_a.read_bytes() + b"\x00")
+    changed_b = frames[1].path
+    changed_b.write_bytes(changed_b.read_bytes() + b"\x00")
 
     frames_again = discover_frames(frames_folder)
-    model2 = _FakeModel({f.filename: [([1, 1, 5, 5], 0.6)] for f in frames_again})
+    model2 = _FakeModel(
+        {
+            frames_again[0].filename: [([1, 1, 5, 5], 0.6)],
+            frames_again[1].filename: [([1, 1, 5, 5], 0.6)],
+        }
+    )
     detections = run_detection(frames_folder, frames_again, model=model2, use_cache=True)
 
-    assert model2.predict_calls == 1  # only the changed frame was re-run
-    assert len(detections) == 1
-    assert detections[0].filename == changed.name
+    assert model2.predict_calls == 2  # only the two changed frames were re-run
+    assert {d.filename for d in detections} == {changed_a.name, changed_b.name}
 
 
 def test_detection_is_a_plain_dataclass():
@@ -127,9 +176,11 @@ class _FixedBoxModel:
     def __init__(self, xyxy, conf):
         self.boxes = _FakeBoxes([xyxy], [conf])
         self.received_sources = []
+        self.received_confs = []
 
-    def predict(self, source, classes, verbose):
+    def predict(self, source, classes, verbose, conf=None):
         self.received_sources.append(source)
+        self.received_confs.append(conf)
         return [_FakeResult(self.boxes)]
 
 

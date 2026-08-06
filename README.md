@@ -62,10 +62,15 @@ footage -- generated for illustration purposes, see below.)*
 
 1. Scans the chosen folder for JPEG frames (`frames.py`), parsing a
    timestamp out of each filename (falls back to file mtime).
-2. Runs YOLOv8s over each frame looking for the `dog` class, keeping the
-   highest-confidence box per frame (`detect.py`). Results are cached per
-   folder in `.dogtracker_cache/`, keyed by file size + mtime, so re-opening
-   the same session skips detection entirely.
+2. Runs YOLOv8s over each frame looking for the `dog` class at a minimum
+   35% confidence, keeping the highest-confidence box per frame (`detect.py`,
+   `MIN_DETECTION_CONFIDENCE`). A detection only counts if an immediately
+   adjacent frame also saw a dog (position doesn't have to match) -- a
+   stray single-frame false positive (e.g. a tuft of fur) essentially never
+   repeats in the very next frame, while a real dog stays in view for
+   several. Results are cached per folder in `.dogtracker_cache/`, keyed by
+   file size + mtime, so re-opening the same session skips detection
+   entirely.
 3. Groups detections into **visits** (a contiguous dwell in roughly one
    spot) and **areas** (visits close enough together to count as the same
    small spot, e.g. repeated trips to a doghouse); the top few areas by
