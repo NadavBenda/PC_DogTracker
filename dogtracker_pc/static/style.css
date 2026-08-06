@@ -302,6 +302,63 @@ header.top .folder {
   flex-shrink: 0;
 }
 
+.ref-frame-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.draw-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.draw-mode-bar[hidden] {
+  display: none;
+}
+
+.draw-mode-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--page);
+  border: 1px dashed var(--accent);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.draw-mode-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.draw-mode-actions button {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.draw-vertex {
+  fill: var(--accent);
+  stroke: var(--surface-1);
+  stroke-width: 1.5;
+}
+
+.draw-path {
+  fill: rgba(42, 120, 214, 0.15);
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+}
+
 .area-overlays {
   position: absolute;
   inset: 0;
@@ -361,10 +418,33 @@ header.top .folder {
   gap: 8px;
 }
 
+.area-card-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .area-card-title {
   font-size: 14px;
   font-weight: 600;
   color: var(--region-color, var(--text-primary));
+}
+
+.area-card-manual-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.area-card-remove {
+  font-size: 11px;
+  padding: 2px 8px;
+  flex-shrink: 0;
 }
 
 .area-card-location {

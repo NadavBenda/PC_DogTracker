@@ -21,11 +21,18 @@ footage -- generated for illustration purposes, see below.)*
   browser marks the dog's exact center point too, not just its bounding box,
   matching the point the heatmap and regions are built from.
 - **Preferred locations** -- the dog's handful of regular spots (e.g. a
-  doghouse, a water bowl), each outlined as its own colored **convex hull**
-  directly on the heatmap image (one color per region, matching that
-  region's heading below, purely visual -- it doesn't block clicking on the
-  heatmap underneath). Per region: how many times it was visited, the length
-  of every individual visit, the total time spent there, and its own
+  doghouse, a water bowl), found automatically (clustered from repeat
+  visits) and/or **drawn by hand**: click "Draw a region" and trace a
+  polygon directly on the heatmap (click points, close it by clicking the
+  first point again or pressing Finish) for a spot the automatic clustering
+  missed or split awkwardly. Both kinds show up in the same list, each
+  outlined as its own colored **convex hull** directly on the heatmap image
+  (one color per region, matching that region's heading below, purely
+  visual -- it doesn't block clicking on the heatmap underneath); manual
+  ones carry a "manual" badge and a Remove button, and persist in
+  `.dogtracker_cache/manual_regions.json` so they're still there next time
+  you open the same folder. Per region: how many times it was visited, the
+  length of every individual visit, the total time spent there, and its own
   clickable **presence timeline** (in the region's color) showing exactly
   when across the whole session the dog was there vs elsewhere. A summary
   line splits total tracked time into "in a highlighted region" vs.

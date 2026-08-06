@@ -72,6 +72,59 @@ def test_areas_endpoint_top_n_marks_extra_areas_as_elsewhere(client):
     assert data["elsewhere_duration_ms"] == data["total_visit_duration_ms"] - data["areas"][0]["total_duration_ms"]
 
 
+def test_manual_region_create_requires_three_points(client):
+    c, _, _ = client
+    res = c.post("/api/manual-regions", json={"points": [[0, 0], [1, 1]]})
+    assert res.status_code == 400
+
+
+def test_manual_region_create_rejects_non_numeric_points(client):
+    c, _, _ = client
+    res = c.post("/api/manual-regions", json={"points": [[0, 0], [1, "x"], [2, 2]]})
+    assert res.status_code == 400
+
+
+def test_manual_region_appears_in_areas_response(client):
+    c, _, _ = client
+    create = c.post("/api/manual-regions", json={"points": [[0, 0], [20, 0], [20, 20], [0, 20]]})
+    assert create.status_code == 201
+    region_id = create.get_json()["id"]
+
+    data = c.get("/api/areas?distance=1000&gap=100000&area_radius=1000").get_json()
+    assert len(data["manual_regions"]) == 1
+    region = data["manual_regions"][0]
+    assert region["id"] == region_id
+    assert region["visit_count"] == 1
+    assert len(region["visits"]) == 1
+
+
+def test_manual_region_delete(client):
+    c, _, _ = client
+    create = c.post("/api/manual-regions", json={"points": [[0, 0], [20, 0], [20, 20], [0, 20]]})
+    region_id = create.get_json()["id"]
+
+    res = c.delete(f"/api/manual-regions/{region_id}")
+    assert res.status_code == 204
+
+    data = c.get("/api/areas?distance=1000&gap=100000&area_radius=1000").get_json()
+    assert data["manual_regions"] == []
+
+
+def test_manual_region_delete_missing_returns_404(client):
+    c, _, _ = client
+    res = c.delete("/api/manual-regions/does-not-exist")
+    assert res.status_code == 404
+
+
+def test_manual_region_overlapping_auto_area_does_not_double_count_elsewhere(client):
+    c, _, _ = client
+    # Same footprint as the auto-highlighted area's one visit -- overlap must
+    # not push elsewhere_duration_ms negative or double-subtract.
+    c.post("/api/manual-regions", json={"points": [[0, 0], [20, 0], [20, 20], [0, 20]]})
+    data = c.get("/api/areas?distance=1000&gap=100000&area_radius=1000&top_n=1").get_json()
+    assert data["elsewhere_duration_ms"] == 0
+
+
 def test_detections_endpoint(client):
     c, _, dets = client
     data = c.get("/api/detections").get_json()

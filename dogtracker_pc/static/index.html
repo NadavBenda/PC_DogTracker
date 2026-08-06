@@ -54,6 +54,7 @@
           <img class="base-frame" id="baseFrame" alt="Reference camera frame" />
           <img id="heatmapImg" alt="Dog visit density heatmap" />
           <div class="area-overlays" id="areaOverlays"></div>
+          <svg class="draw-overlay" id="drawOverlay"></svg>
           <div class="tooltip" id="heatmapTooltip">
             <div class="value" id="tooltipValue"></div>
             <div class="sub" id="tooltipSub"></div>
@@ -66,7 +67,17 @@
         </div>
         <div class="ref-frame-row">
           <span id="refFrameLabel"></span>
-          <button id="useCurrentFrameBtn" class="ghost" type="button">Use current frame as background</button>
+          <div class="ref-frame-actions">
+            <button id="useCurrentFrameBtn" class="ghost" type="button">Use current frame as background</button>
+            <button id="drawRegionBtn" class="ghost" type="button">Draw a region</button>
+          </div>
+        </div>
+        <div class="draw-mode-bar" id="drawModeBar" hidden>
+          <span>Click points on the heatmap to trace a region &middot; click the first point again (or press Finish) to close it</span>
+          <div class="draw-mode-actions">
+            <button id="finishDrawBtn" class="ghost" type="button" disabled>Finish</button>
+            <button id="cancelDrawBtn" class="ghost" type="button">Cancel</button>
+          </div>
         </div>
       </div>
 

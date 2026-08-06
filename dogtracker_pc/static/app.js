@@ -10,6 +10,7 @@
     visits: [],
     currentIndex: 0,
     currentHighlightedAreas: [],
+    drawMode: { active: false, points: [] },
   };
 
   const el = (id) => document.getElementById(id);
@@ -20,6 +21,25 @@
       throw new Error(`${url} -> ${res.status}`);
     }
     return res.json();
+  }
+
+  async function postJSON(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      throw new Error(`${url} -> ${res.status}`);
+    }
+    return res.json();
+  }
+
+  async function deleteRequest(url) {
+    const res = await fetch(url, { method: "DELETE" });
+    if (!res.ok) {
+      throw new Error(`${url} -> ${res.status}`);
+    }
   }
 
   function formatElapsed(ms) {
@@ -286,14 +306,14 @@
   // spent inside this specific region, using the region's own visit time
   // ranges (start_ts .. start_ts + duration_ms) rather than exact frames,
   // since that's what /api/areas already reports per visit.
-  function renderAreaRuler(canvas, area) {
-    const intervals = area.visits.map((v) => [v.start_ts, v.start_ts + v.duration_ms]);
+  function renderAreaRuler(canvas, region) {
+    const intervals = region.visits.map((v) => [v.start_ts, v.start_ts + v.duration_ms]);
     const isInRegion = (i) => {
       const ts = state.frames[i].timestamp_ms;
       return intervals.some(([start, end]) => ts >= start && ts <= end);
     };
     const styles = getComputedStyle(document.body);
-    const slot = ((area.rank - 1) % REGION_COLOR_COUNT) + 1;
+    const slot = ((region.displayRank - 1) % REGION_COLOR_COUNT) + 1;
     const color = styles.getPropertyValue(`--region-${slot}`).trim() || "#2a78d6";
     renderPresenceRuler(canvas, isInRegion, color, 14);
   }
@@ -375,11 +395,111 @@
     });
 
     stage.addEventListener("click", (event) => {
+      if (state.drawMode.active) {
+        addDrawPoint(event, stageToFramePx);
+        return;
+      }
       if (state.detections.length === 0) return;
       const { fx, fy } = stageToFramePx(event.clientX, event.clientY);
       const { index } = nearestDetectionIndex(fx, fy);
       setCurrentIndex(frameIndexForDetectionIndex(index));
     });
+  }
+
+  // ======================================================
+  // Manual region drawing: click points on the heatmap to trace an arbitrary
+  // polygon, closed either by clicking back near the first point or via the
+  // explicit Finish button, then persisted server-side (see
+  // dogtracker_pc/regions.py) alongside the automatically-clustered areas.
+  // ======================================================
+  const DRAW_CLOSE_THRESHOLD_PX = 12;
+
+  function renderDraftOverlay() {
+    const svg = el("drawOverlay");
+    const { frame_width, frame_height } = state.summary;
+    svg.setAttribute("viewBox", `0 0 ${frame_width} ${frame_height}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.replaceChildren();
+
+    const points = state.drawMode.points;
+    if (points.length >= 2) {
+      const path = document.createElementNS(SVG_NS, "polyline");
+      path.setAttribute("points", points.map(([x, y]) => `${x},${y}`).join(" "));
+      path.setAttribute("class", "draw-path");
+      path.setAttribute("fill", "none");
+      svg.appendChild(path);
+    }
+    for (const [x, y] of points) {
+      const dot = document.createElementNS(SVG_NS, "circle");
+      dot.setAttribute("cx", String(x));
+      dot.setAttribute("cy", String(y));
+      dot.setAttribute("r", String(Math.max(3, frame_width / 160)));
+      dot.setAttribute("class", "draw-vertex");
+      svg.appendChild(dot);
+    }
+  }
+
+  function addDrawPoint(event, stageToFramePx) {
+    const { fx, fy, rect } = stageToFramePx(event.clientX, event.clientY);
+    const points = state.drawMode.points;
+
+    if (points.length >= 3) {
+      const { frame_width, frame_height } = state.summary;
+      const [firstFx, firstFy] = points[0];
+      const firstClientX = rect.left + (firstFx / frame_width) * rect.width;
+      const firstClientY = rect.top + (firstFy / frame_height) * rect.height;
+      const dist = Math.hypot(event.clientX - firstClientX, event.clientY - firstClientY);
+      if (dist <= DRAW_CLOSE_THRESHOLD_PX) {
+        finishDrawMode();
+        return;
+      }
+    }
+
+    points.push([fx, fy]);
+    renderDraftOverlay();
+    el("finishDrawBtn").disabled = points.length < 3;
+  }
+
+  function startDrawMode() {
+    state.drawMode = { active: true, points: [] };
+    el("drawModeBar").hidden = false;
+    el("drawRegionBtn").disabled = true;
+    el("finishDrawBtn").disabled = true;
+    renderDraftOverlay();
+  }
+
+  function exitDrawMode() {
+    state.drawMode = { active: false, points: [] };
+    el("drawModeBar").hidden = true;
+    el("drawRegionBtn").disabled = false;
+    el("drawOverlay").replaceChildren();
+  }
+
+  async function finishDrawMode() {
+    const points = state.drawMode.points;
+    if (points.length < 3) return;
+    exitDrawMode();
+    try {
+      await postJSON("/api/manual-regions", { points });
+      await refreshAreas();
+    } catch (err) {
+      console.error("Failed to save the drawn region:", err);
+    }
+  }
+
+  async function removeManualRegion(id) {
+    try {
+      await deleteRequest(`/api/manual-regions/${encodeURIComponent(id)}`);
+      await refreshAreas();
+    } catch (err) {
+      console.error("Failed to remove the region:", err);
+    }
+  }
+
+  function setupDrawModeControls() {
+    el("drawRegionBtn").addEventListener("click", startDrawMode);
+    el("cancelDrawBtn").addEventListener("click", exitDrawMode);
+    el("finishDrawBtn").addEventListener("click", finishDrawMode);
   }
 
   function debounce(fn, wait) {
@@ -418,31 +538,38 @@
   const REGION_COLOR_COUNT = 6;
   const SVG_NS = "http://www.w3.org/2000/svg";
 
-  function regionColorVar(rank) {
-    const slot = ((rank - 1) % REGION_COLOR_COUNT) + 1;
+  function regionColorVar(displayRank) {
+    const slot = ((displayRank - 1) % REGION_COLOR_COUNT) + 1;
     return `var(--region-${slot})`;
   }
 
+  function centroidOfPoints(points) {
+    const n = points.length;
+    const sx = points.reduce((s, p) => s + p[0], 0);
+    const sy = points.reduce((s, p) => s + p[1], 0);
+    return [sx / n, sy / n];
+  }
+
   // Convex-hull polygon overlays on the reference/heatmap image, one per
-  // highlighted area, each in its own color -- an SVG (not absolutely
-  // positioned divs) so the polygon points map directly onto frame pixel
-  // coordinates via viewBox, matching how the frame's own aspect ratio
-  // scales on screen. Purely decorative (no pointer events): they sit on
-  // top of the heatmap, and capturing clicks there would shadow clicks on
+  // region (automatic or manually drawn), each in its own color -- an SVG
+  // (not absolutely positioned divs) so the polygon points map directly onto
+  // frame pixel coordinates via viewBox, matching how the frame's own aspect
+  // ratio scales on screen. Purely decorative (no pointer events): they sit
+  // on top of the heatmap, and capturing clicks there would shadow clicks on
   // the heatmap's own points underneath.
-  function renderAreaOverlays(areas) {
+  function renderAreaOverlays(regions) {
     const container = el("areaOverlays");
     const { frame_width, frame_height } = state.summary;
-    const highlighted = areas.filter((a) => a.is_highlighted && a.hull.length >= 3);
 
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("viewBox", `0 0 ${frame_width} ${frame_height}`);
     svg.setAttribute("preserveAspectRatio", "none");
 
-    for (const area of highlighted) {
-      const color = regionColorVar(area.rank);
+    for (const region of regions) {
+      if (!region.hull || region.hull.length < 3) continue;
+      const color = regionColorVar(region.displayRank);
       const polygon = document.createElementNS(SVG_NS, "polygon");
-      polygon.setAttribute("points", area.hull.map(([x, y]) => `${x},${y}`).join(" "));
+      polygon.setAttribute("points", region.hull.map(([x, y]) => `${x},${y}`).join(" "));
       polygon.setAttribute("class", "area-hull");
       polygon.style.stroke = color;
       polygon.style.fill = color;
@@ -452,31 +579,59 @@
     container.replaceChildren(svg);
   }
 
-  function areaCard(area) {
+  function areaCard(region) {
+    const isManual = region.kind === "manual";
+    const [centroidX, centroidY] = isManual ? centroidOfPoints(region.hull) : [region.centroid_x, region.centroid_y];
+
     const card = document.createElement("div");
     card.className = "area-card";
-    card.style.setProperty("--region-color", regionColorVar(area.rank));
+    card.style.setProperty("--region-color", regionColorVar(region.displayRank));
 
     const header = document.createElement("div");
     header.className = "area-card-header";
+
+    const titleGroup = document.createElement("div");
+    titleGroup.className = "area-card-title-group";
     const title = document.createElement("div");
     title.className = "area-card-title";
-    title.textContent = `Region ${area.rank}`;
+    title.textContent = `Region ${region.displayRank}`;
+    titleGroup.appendChild(title);
+    if (isManual) {
+      const badge = document.createElement("span");
+      badge.className = "area-card-manual-badge";
+      badge.textContent = "manual";
+      titleGroup.appendChild(badge);
+    }
+
     const location = document.createElement("div");
     location.className = "area-card-location";
-    location.textContent = `Around (${Math.round(area.centroid_x)}, ${Math.round(area.centroid_y)})`;
-    header.append(title, location);
+    location.textContent = `Around (${Math.round(centroidX)}, ${Math.round(centroidY)})`;
+    header.append(titleGroup, location);
+
+    if (isManual) {
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "ghost area-card-remove";
+      removeBtn.textContent = "Remove";
+      removeBtn.addEventListener("click", () => removeManualRegion(region.id));
+      header.appendChild(removeBtn);
+    }
 
     const headline = document.createElement("div");
     headline.className = "area-card-headline";
     headline.textContent =
-      area.visit_count === 1
-        ? `Visited once, for ${formatElapsed(area.avg_duration_ms)}`
-        : `Visited ${area.visit_count} times, ${formatElapsed(area.total_duration_ms)} total`;
+      region.visit_count === 0
+        ? "No visits in this region yet"
+        : region.visit_count === 1
+        ? `Visited once, for ${formatElapsed(region.avg_duration_ms)}`
+        : `Visited ${region.visit_count} times, ${formatElapsed(region.total_duration_ms)} total`;
 
     const lengths = document.createElement("div");
     lengths.className = "area-card-lengths";
-    lengths.textContent = `Visit lengths: ${area.visits.map((v) => formatElapsed(v.duration_ms)).join(", ")}`;
+    lengths.textContent =
+      region.visits.length > 0
+        ? `Visit lengths: ${region.visits.map((v) => formatElapsed(v.duration_ms)).join(", ")}`
+        : "";
 
     // Mini presence ruler -- same idea as the main detection-presence ruler
     // under the frame browser, scoped to just this region: colored (in this
@@ -498,7 +653,7 @@
     rulerLegend.className = "ruler-legend";
     const onSwatch = document.createElement("span");
     onSwatch.className = "swatch";
-    onSwatch.style.background = regionColorVar(area.rank);
+    onSwatch.style.background = regionColorVar(region.displayRank);
     const onLabel = document.createElement("span");
     onLabel.append(onSwatch, document.createTextNode("in this region"));
     const offSwatch = document.createElement("span");
@@ -510,7 +665,7 @@
     const strip = document.createElement("div");
     strip.className = "thumb-strip";
     strip.append(
-      ...area.visits.map((visit, i) =>
+      ...region.visits.map((visit, i) =>
         thumb(
           `/frames/${encodeURIComponent(visit.representative_filename)}`,
           `Visit ${i + 1} · ${formatElapsed(elapsedOf(visit.start_ts))}`,
@@ -523,9 +678,19 @@
     return card;
   }
 
+  // Automatic (clustered) and manually-drawn regions are both "preferred
+  // locations" and share one combined, continuously color-numbered list --
+  // there's no reason to keep them in visually separate systems, since a
+  // manual region is just a stand-in for a spot the automatic clustering
+  // missed or split awkwardly. Automatic areas are listed first (in their
+  // ranked order), manual ones after (in creation order).
   function renderAreas(data) {
     const card = el("areasCard");
-    if (data.areas.length === 0) {
+    const highlightedAuto = data.areas.filter((a) => a.is_highlighted).map((a) => ({ ...a, kind: "auto" }));
+    const manual = (data.manual_regions || []).map((r) => ({ ...r, kind: "manual" }));
+    const combined = [...highlightedAuto, ...manual].map((r, i) => ({ ...r, displayRank: i + 1 }));
+
+    if (combined.length === 0) {
       card.hidden = true;
       state.currentHighlightedAreas = [];
       renderAreaOverlays([]);
@@ -533,17 +698,16 @@
     }
     card.hidden = false;
 
-    const highlighted = data.areas.filter((a) => a.is_highlighted);
     const overview = el("areasOverview");
     overview.replaceChildren(
       statTile("Time in highlighted regions", formatElapsed(data.total_visit_duration_ms - data.elsewhere_duration_ms)),
       statTile("Elsewhere (in transit)", formatElapsed(data.elsewhere_duration_ms))
     );
 
-    state.currentHighlightedAreas = highlighted;
-    el("areaList").replaceChildren(...highlighted.map(areaCard));
+    state.currentHighlightedAreas = combined;
+    el("areaList").replaceChildren(...combined.map(areaCard));
     redrawAreaRulers();
-    renderAreaOverlays(data.areas);
+    renderAreaOverlays(combined);
   }
 
   async function refreshAreas() {
@@ -788,6 +952,7 @@
     setupFilterControls();
     setupFrameControls();
     setupHeatmapInteraction();
+    setupDrawModeControls();
     setupRulerInteraction();
     renderDetectionRulerBackground();
 

@@ -24,6 +24,7 @@ from .analysis import (
 )
 from .detect import Detection
 from .frames import Frame
+from .regions import add_manual_region, delete_manual_region, load_manual_regions, point_in_polygon
 
 logger = logging.getLogger(__name__)
 
@@ -171,12 +172,46 @@ def create_app(
             ]
             return [[x, y] for x, y in hull_polygon(points)]
 
-        # The dog's handful of preferred spots are the top `top_n` areas by
-        # (visit_count, total_duration_ms) -- already how `areas` is sorted.
+        # User-drawn regions: a visit belongs to one if its centroid falls
+        # inside the polygon -- the same granularity find_areas() already
+        # uses for automatic clustering (a visit, not individual detections,
+        # is the unit of membership), so the two kinds of region behave the
+        # same way once matched.
+        manual_regions = load_manual_regions(folder)
+        manual_region_results = []
+        manual_visit_indices: set[int] = set()
+        for region in manual_regions:
+            member_indices = [
+                i for i, v in enumerate(visits) if point_in_polygon(v.centroid_x, v.centroid_y, region.points)
+            ]
+            manual_visit_indices.update(member_indices)
+            total_ms = sum(visits[i].duration_ms for i in member_indices)
+            manual_region_results.append(
+                {
+                    "id": region.id,
+                    "hull": [list(p) for p in region.points],
+                    "visit_count": len(member_indices),
+                    "total_duration_ms": total_ms,
+                    "avg_duration_ms": (total_ms / len(member_indices)) if member_indices else 0,
+                    "visits": [visit_summary(i) for i in member_indices],
+                }
+            )
+
+        # The dog's handful of preferred spots are the top `top_n` automatic
+        # areas by (visit_count, total_duration_ms) -- already how `areas` is
+        # sorted -- plus every manually-drawn region (always shown; there's
+        # no "top N" concept for something the user deliberately drew).
         # Everything else counted as a "visit" but outside those highlighted
         # spots is time in transit / minor one-off stops, not a preferred
-        # location.
-        highlighted_duration_ms = sum(area.total_duration_ms for area in areas[:top_n])
+        # location. A visit inside both an automatic and a manual region
+        # (they can overlap) must only count once, hence the index set
+        # rather than summing each source's duration separately.
+        highlighted_visit_indices: set[int] = set()
+        for area in areas[:top_n]:
+            highlighted_visit_indices.update(area.visit_indices)
+        highlighted_visit_indices.update(manual_visit_indices)
+
+        highlighted_duration_ms = sum(visits[i].duration_ms for i in highlighted_visit_indices)
         total_visit_duration_ms = sum(v.duration_ms for v in visits)
 
         return jsonify(
@@ -195,10 +230,30 @@ def create_app(
                     }
                     for rank, area in enumerate(areas, start=1)
                 ],
+                "manual_regions": manual_region_results,
                 "total_visit_duration_ms": total_visit_duration_ms,
                 "elsewhere_duration_ms": max(total_visit_duration_ms - highlighted_duration_ms, 0),
             }
         )
+
+    @app.post("/api/manual-regions")
+    def create_manual_region():
+        payload = request.get_json(silent=True) or {}
+        points = payload.get("points")
+        if not isinstance(points, list) or len(points) < 3:
+            abort(400, description="points must be a list of at least 3 [x, y] pairs")
+        try:
+            parsed = [(float(p[0]), float(p[1])) for p in points]
+        except (TypeError, ValueError, IndexError, KeyError):
+            abort(400, description="each point must be a [x, y] pair of numbers")
+        region = add_manual_region(folder, parsed)
+        return jsonify({"id": region.id, "points": [list(p) for p in region.points]}), 201
+
+    @app.delete("/api/manual-regions/<region_id>")
+    def remove_manual_region(region_id: str):
+        if not delete_manual_region(folder, region_id):
+            abort(404)
+        return "", 204
 
     @app.get("/api/heatmap.png")
     def heatmap_png():
