@@ -533,17 +533,47 @@
     renderKPIs();
   }
 
-  function thumb(imgSrc, captionText, onClick) {
+  // `det` (optional) is the representative detection for this thumbnail --
+  // when given, a dot is drawn at its center, the same point used for the
+  // heatmap and the frame browser's own center marker. `subText` (optional)
+  // is a second caption line, e.g. the visit's length.
+  function thumb(imgSrc, captionText, subText, det, onClick) {
     const wrap = document.createElement("div");
     wrap.className = "thumb";
+
+    // The dot's left/top percentages are resolved against this wrapper, so
+    // it has to contain only the image (not the captions below) or the dot
+    // would land relative to the whole card's height instead of the image's.
+    const imgWrap = document.createElement("div");
+    imgWrap.className = "thumb-image-wrap";
     const img = document.createElement("img");
     img.src = imgSrc;
     img.alt = captionText;
     img.loading = "lazy";
+    imgWrap.appendChild(img);
+
+    if (det) {
+      const dot = document.createElement("div");
+      dot.className = "thumb-dot";
+      const { frame_width, frame_height } = state.summary;
+      dot.style.left = `${(det.x / frame_width) * 100}%`;
+      dot.style.top = `${(det.y / frame_height) * 100}%`;
+      imgWrap.appendChild(dot);
+    }
+    wrap.appendChild(imgWrap);
+
     const caption = document.createElement("div");
     caption.className = "caption";
     caption.textContent = captionText;
-    wrap.append(img, caption);
+    wrap.appendChild(caption);
+
+    if (subText) {
+      const sub = document.createElement("div");
+      sub.className = "caption-sub";
+      sub.textContent = subText;
+      wrap.appendChild(sub);
+    }
+
     wrap.addEventListener("click", onClick);
     return wrap;
   }
@@ -641,13 +671,6 @@
         ? `Visited once, for ${formatElapsed(region.avg_duration_ms)}`
         : `Visited ${region.visit_count} times, ${formatElapsed(region.total_duration_ms)} total`;
 
-    const lengths = document.createElement("div");
-    lengths.className = "area-card-lengths";
-    lengths.textContent =
-      region.visits.length > 0
-        ? `Visit lengths: ${region.visits.map((v) => formatElapsed(v.duration_ms)).join(", ")}`
-        : "";
-
     // Mini presence ruler -- same idea as the main detection-presence ruler
     // under the frame browser, scoped to just this region: colored (in this
     // region's own color) where the dog was here, empty everywhere else
@@ -686,12 +709,14 @@
         thumb(
           `/frames/${encodeURIComponent(visit.representative_filename)}`,
           `Visit ${i + 1} · ${formatElapsed(elapsedOf(visit.start_ts))}`,
+          `Length: ${formatElapsed(visit.duration_ms)}`,
+          state.detections[visit.representative_index],
           () => setCurrentIndex(frameIndexForDetectionIndex(visit.representative_index))
         )
       )
     );
 
-    card.append(header, headline, lengths, rulerWrap, rulerLegend, strip);
+    card.append(header, headline, rulerWrap, rulerLegend, strip);
     return card;
   }
 

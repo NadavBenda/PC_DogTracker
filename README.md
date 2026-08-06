@@ -33,11 +33,13 @@ footage -- generated for illustration purposes, see below.)*
   `.dogtracker_cache/manual_regions.json` so they're still there next time
   you open the same folder. "Regions to highlight" goes down to 0 if you'd
   rather see only manually-drawn regions and no automatic ones. Per region:
-  how many times it was visited, the length of every individual visit, the
-  total time spent there, and its own clickable **presence timeline** (in
-  the region's color, with the same current-frame marker line the frame
-  browser's own ruler has) showing exactly when across the whole session
-  the dog was there vs elsewhere. A summary line splits total tracked time
+  how many times it was visited and the total time spent there, a
+  thumbnail per visit (marked with a dot at the dog's exact position and
+  captioned with that visit's own length), and its own clickable
+  **presence timeline** (in the region's color, with the same current-frame
+  marker line the frame browser's own ruler has) showing exactly when
+  across the whole session the dog was there vs elsewhere. A summary line
+  splits total tracked time
   into "in a highlighted region" vs. "elsewhere (in transit)" -- time spent
   moving between spots rather than dwelling in one of them.
 - **Movement path over time** -- a smooth spline through every detected
