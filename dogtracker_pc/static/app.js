@@ -835,7 +835,7 @@
     return Math.atan2(y1 - y0, x1 - x0);
   }
 
-  function drawDirectionArrow(ctx, x, y, angle, size, fillColor, ringColor) {
+  function drawDirectionArrow(ctx, x, y, angle, size, fillColor) {
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(angle);
@@ -846,9 +846,6 @@
     ctx.closePath();
     ctx.fillStyle = fillColor;
     ctx.fill();
-    ctx.lineWidth = Math.max(1, size / 6);
-    ctx.strokeStyle = ringColor;
-    ctx.stroke();
     ctx.restore();
   }
 
@@ -921,8 +918,22 @@
       }
     }
 
+    // Direction-of-travel arrows every 5 minutes of elapsed wall-clock time
+    // (independent of the 0-10 badges below, which mark 10% steps instead).
+    // Drawn before the badges so a badge that lands near an arrow covers it,
+    // not the other way around -- the numbers must stay readable.
+    const durationMs = state.summary.duration_ms || 0;
+    const arrowSize = Math.max(4, Math.round(frame_width / 110));
+    for (let ms = TRAJECTORY_ARROW_INTERVAL_MS; ms < durationMs; ms += TRAJECTORY_ARROW_INTERVAL_MS) {
+      const frac = ms / durationMs;
+      const [x, y] = positionAtElapsedFraction(dets, frac);
+      const angle = directionAngleAtElapsedFraction(dets, frac, durationMs);
+      const [r, g, b] = trajectoryColorAt(frac, stops);
+      drawDirectionArrow(ctx, x, y, angle, arrowSize, `rgb(${r}, ${g}, ${b})`);
+    }
+
     // 0-10 badges at every 10% of elapsed time, drawn last so they sit on
-    // top of the path lines.
+    // top of everything else.
     const badgeRadius = Math.max(8, Math.round(frame_width / 45));
     ctx.font = `${Math.round(badgeRadius * 1.1)}px system-ui, sans-serif`;
     ctx.textAlign = "center";
@@ -944,18 +955,6 @@
       const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
       ctx.fillStyle = luminance > 140 ? "#0b0b0b" : "#ffffff";
       ctx.fillText(String(k), x, y + 1);
-    }
-
-    // Direction-of-travel arrows every 5 minutes of elapsed wall-clock time
-    // (independent of the 0-10 badges above, which mark 10% steps).
-    const durationMs = state.summary.duration_ms || 0;
-    const arrowSize = Math.max(7, Math.round(frame_width / 55));
-    for (let ms = TRAJECTORY_ARROW_INTERVAL_MS; ms < durationMs; ms += TRAJECTORY_ARROW_INTERVAL_MS) {
-      const frac = ms / durationMs;
-      const [x, y] = positionAtElapsedFraction(dets, frac);
-      const angle = directionAngleAtElapsedFraction(dets, frac, durationMs);
-      const [r, g, b] = trajectoryColorAt(frac, stops);
-      drawDirectionArrow(ctx, x, y, angle, arrowSize, `rgb(${r}, ${g}, ${b})`, surface);
     }
   }
 
