@@ -111,6 +111,26 @@ an annotated copy -- it quickly tells you whether the model is missing the
 dog completely (focus/distance/lighting) or seeing it "almost" at a
 confidence just under the usual cutoff.
 
+### More than one dog in the same recording
+
+The main dashboard assumes a single dog: detection keeps only the
+highest-confidence box per frame, and every downstream feature (visits,
+preferred locations, the movement-path map) is built on that one continuous
+position stream. Running it as-is on footage with two dogs produces a
+misleading result -- a single fake trajectory that jumps between two
+unrelated animals whenever the "winning" box switches between frames.
+
+For a one-off recording with more than one dog, `python two_dog_heatmap.py
+path\to\frames` (repo root) is a separate, standalone tool that sidesteps
+identity instead of solving it: it keeps *every* dog detected in each frame
+(not just the best one), with no attempt to track which box is which dog
+across frames, and plots all of them together as a single density heatmap --
+"where dogs were", not "where each dog was". It doesn't touch or depend on
+anything the main dashboard's single-dog pipeline needs, so using it can't
+affect normal single-dog sessions. Same `--rotate`/`--rescan`/`-v` flags as
+the main tool; saves `<folder>/multi_dog_heatmap.png` by default (override
+with `--output`), and prints how many frames had 2+ dogs detected at once.
+
 ## Building DogTracker.exe (Windows only)
 
 PyInstaller does not cross-compile, so the `.exe` must be built on Windows:
