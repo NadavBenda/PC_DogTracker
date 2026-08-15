@@ -113,23 +113,35 @@ confidence just under the usual cutoff.
 
 ### More than one dog in the same recording
 
-The main dashboard assumes a single dog: detection keeps only the
+The main dashboard normally assumes a single dog: detection keeps only the
 highest-confidence box per frame, and every downstream feature (visits,
 preferred locations, the movement-path map) is built on that one continuous
 position stream. Running it as-is on footage with two dogs produces a
 misleading result -- a single fake trajectory that jumps between two
 unrelated animals whenever the "winning" box switches between frames.
 
-For a one-off recording with more than one dog, `python two_dog_heatmap.py
-path\to\frames` (repo root) is a separate, standalone tool that sidesteps
-identity instead of solving it: it keeps *every* dog detected in each frame
-(not just the best one), with no attempt to track which box is which dog
-across frames, and plots all of them together as a single density heatmap --
-"where dogs were", not "where each dog was". It doesn't touch or depend on
-anything the main dashboard's single-dog pipeline needs, so using it can't
-affect normal single-dog sessions. Same `--rotate`/`--rescan`/`-v` flags as
-the main tool; saves `<folder>/multi_dog_heatmap.png` by default (override
-with `--output`), and prints how many frames had 2+ dogs detected at once.
+The "Detect 2+ dogs (no single-dog trajectory)" toggle above the filter row
+switches the whole dashboard to a mode that keeps *every* dog detected in
+each frame instead of just the best one, with no attempt to track which box
+is which dog across frames -- the heatmap, visits, and preferred locations
+all become "where dogs were" rather than "where the dog was". Because there's
+no continuous single subject, the movement-path map doesn't make sense in
+this mode and is hidden while the toggle is on. Turning it on runs a second
+YOLO pass over every frame the first time (cached afterwards, same as normal
+detection); turning it back off instantly reverts to the regular single-dog
+view. Use it for a one-off recording with more than one dog -- it doesn't
+touch or affect the single-dog data at all, so leaving it off keeps the
+dashboard exactly as before.
+
+For scripting or batch use outside the dashboard, `python two_dog_heatmap.py
+path\to\frames` (repo root) is a separate, standalone tool built on the same
+multi-dog detection: it plots every dog detected in every frame as a single
+flattened density heatmap PNG, no browser UI involved. Same
+`--rotate`/`--rescan`/`-v` flags as the main tool; saves
+`<folder>/multi_dog_heatmap.png` by default (override with `--output`), and
+prints how many frames had 2+ dogs detected at once. Both it and the
+dashboard toggle share the same `multi_dog_detections.json` cache per
+session folder, so running one first makes the other instant.
 
 ## Building DogTracker.exe (Windows only)
 

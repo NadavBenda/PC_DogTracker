@@ -1,24 +1,26 @@
 """Standalone multi-dog heatmap tool -- for a one-off recording with more
 than one dog in frame at once.
 
-The main dashboard (dogtracker_pc/) assumes a single dog: detection keeps
-only the highest-confidence box per frame (see detect._detect_single), and
-everything downstream -- visits, areas, the movement-path map -- is built on
-that one continuous position stream. With two dogs in the same footage, that
-collapses into a single fake trajectory that jumps between two unrelated
-animals whenever the "winning" box switches -- not just incomplete, actively
-misleading.
+The main dashboard's default mode assumes a single dog: detection keeps
+only the highest-confidence box per frame, and visits/areas/the movement-
+path map are all built on that one continuous position stream. The
+dashboard also has an optional "detect 2+ dogs" toggle now (see
+server.py/app.js) that switches to the same multi-dog detection this script
+uses, but hides the movement-path map (a spline through points from
+different, untracked dogs isn't a meaningful route).
 
-This script sidesteps the identity problem instead of solving it: it keeps
-EVERY dog detected in each frame (not just the best one), with no attempt to
-track which box is which dog across frames, and plots all of them together
-as a single density heatmap -- "where dogs were", not "where each dog was".
+This script is for doing that same multi-dog analysis without the
+dashboard at all -- just a single flattened PNG. It keeps EVERY dog
+detected in each frame (not just the best one), with no attempt to track
+which box is which dog across frames, and plots all of them together as a
+single density heatmap -- "where dogs were", not "where each dog was".
 That's exactly what a merged heatmap needs (analysis.build_heatmap already
 just accumulates points; it doesn't care how many came from one frame or
-which animal they belonged to), so nothing in the main pipeline
-(detect.run_detection, server.py, the dashboard) is touched or has to change
-to support this -- this is a fully separate entry point that only imports
-already-public pieces of dogtracker_pc.
+which animal they belonged to). Detection itself
+(detect.detect_all_dogs/run_multi_dog_detection) is shared with the
+dashboard's toggle, including the cache file, so running this script first
+and then switching the toggle on in the dashboard (or vice versa) reuses
+the same cached results instead of re-detecting.
 
 Usage:
     python two_dog_heatmap.py [frames_folder] [--rotate {90,180,270}]
@@ -27,151 +29,25 @@ Usage:
 With no frames_folder, a folder-picker dialog opens (same as
 run_dogtracker.py). Detections are cached per folder in
 .dogtracker_cache/multi_dog_detections.json -- a separate file from the
-single-dog cache the main dashboard uses, so the two never collide.
+single-dog cache the main dashboard's default mode uses, so the two never
+collide.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
-from collections import Counter
-from dataclasses import asdict
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 from PIL import Image
 
 from dogtracker_pc.analysis import DEFAULT_BLUR_RADIUS_PX, build_heatmap
-from dogtracker_pc.detect import DOG_CLASS_ID, MIN_DETECTION_CONFIDENCE, Detection, default_model_factory
+from dogtracker_pc.detect import Detection, default_model_factory, frames_with_multiple_dogs, run_multi_dog_detection
 from dogtracker_pc.frames import Frame, discover_frames
 
 logger = logging.getLogger("two_dog_heatmap")
-
-CACHE_DIRNAME = ".dogtracker_cache"
-CACHE_FILENAME = "multi_dog_detections.json"
-CACHE_VERSION = 1
-
-
-# ======================================================
-# Detection: every box above the confidence floor, not just the best one.
-# Deliberately not reusing detect._detect_single, which discards everything
-# but the top box by design -- that's correct for the single-dog pipeline
-# and wrong here.
-# ======================================================
-def _fingerprint(frame: Frame) -> str:
-    return f"{frame.size}:{int(frame.mtime)}"
-
-
-def _cache_path(folder: Path) -> Path:
-    return folder / CACHE_DIRNAME / CACHE_FILENAME
-
-
-def _load_cache(folder: Path, rotate_degrees: int) -> dict:
-    path = _cache_path(folder)
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Ignoring unreadable multi-dog cache: %s", exc)
-        return {}
-    if data.get("version") != CACHE_VERSION or data.get("rotate_degrees", 0) != rotate_degrees:
-        return {}
-    return data.get("entries", {})
-
-
-def _save_cache(folder: Path, entries: dict, rotate_degrees: int) -> None:
-    path = _cache_path(folder)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"version": CACHE_VERSION, "rotate_degrees": rotate_degrees, "entries": entries}))
-    tmp.replace(path)
-
-
-def detect_all_dogs(model, frame: Frame, rotate_degrees: int = 0) -> list[Detection]:
-    """Every dog box in ``frame`` at/above MIN_DETECTION_CONFIDENCE (0, 1, or more)."""
-    if rotate_degrees:
-        with Image.open(frame.path) as img:
-            source = img.convert("RGB").rotate(-rotate_degrees, expand=True)
-        width, height = source.size
-        results = model.predict(source=source, classes=[DOG_CLASS_ID], verbose=False, conf=MIN_DETECTION_CONFIDENCE)
-    else:
-        width, height = frame.width, frame.height
-        results = model.predict(
-            source=str(frame.path), classes=[DOG_CLASS_ID], verbose=False, conf=MIN_DETECTION_CONFIDENCE
-        )
-
-    if not results:
-        return []
-    boxes = getattr(results[0], "boxes", None)
-    if boxes is None or len(boxes) == 0:
-        return []
-
-    detections = []
-    for i in range(len(boxes)):
-        x1, y1, x2, y2 = [float(v) for v in boxes.xyxy[i].tolist()]
-        detections.append(
-            Detection(
-                filename=frame.filename,
-                timestamp_ms=frame.timestamp_ms,
-                frame_width=width,
-                frame_height=height,
-                x=(x1 + x2) / 2,
-                y=(y1 + y2) / 2,
-                w=x2 - x1,
-                h=y2 - y1,
-                confidence=float(boxes.conf[i]),
-            )
-        )
-    return detections
-
-
-def run_multi_dog_detection(
-    folder: Path,
-    frames: list[Frame],
-    model,
-    rotate_degrees: int = 0,
-    use_cache: bool = True,
-    progress_cb: Optional[Callable[[int, int], None]] = None,
-) -> list[Detection]:
-    """detect_all_dogs() over every frame, reusing cached per-frame results."""
-    folder = Path(folder)
-    cache = _load_cache(folder, rotate_degrees) if use_cache else {}
-    all_detections: list[Detection] = []
-    to_run: list[Frame] = []
-
-    for frame in frames:
-        fingerprint = _fingerprint(frame)
-        cached = cache.get(frame.filename)
-        if cached is not None and cached.get("fingerprint") == fingerprint:
-            all_detections.extend(Detection(**d) for d in cached.get("detections", []))
-            continue
-        to_run.append(frame)
-
-    total = len(to_run)
-    for done, frame in enumerate(to_run, start=1):
-        dets = detect_all_dogs(model, frame, rotate_degrees)
-        cache[frame.filename] = {
-            "fingerprint": _fingerprint(frame),
-            "detections": [asdict(d) for d in dets],
-        }
-        all_detections.extend(dets)
-        if progress_cb:
-            progress_cb(done, total)
-
-    if use_cache and to_run:
-        _save_cache(folder, cache, rotate_degrees)
-
-    all_detections.sort(key=lambda d: d.timestamp_ms)
-    return all_detections
-
-
-def frames_with_multiple_dogs(detections: list[Detection]) -> int:
-    """How many distinct frames had 2+ dogs detected at once."""
-    counts = Counter(d.filename for d in detections)
-    return sum(1 for c in counts.values() if c >= 2)
 
 
 # ======================================================

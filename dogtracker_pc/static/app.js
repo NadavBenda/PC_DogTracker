@@ -9,8 +9,12 @@
     frameIndexByFilename: new Map(),
     visits: [],
     currentIndex: 0,
+    currentFrameDetections: [],
+    currentMarkerEls: [],
     currentHighlightedAreas: [],
     drawMode: { active: false, points: [] },
+    mode: "single",
+    multiDogComputed: false,
   };
 
   const el = (id) => document.getElementById(id);
@@ -144,73 +148,64 @@
     return { index: bestIndex, distance: Math.sqrt(bestDist) };
   }
 
+  // In multi-dog mode a frame can have more than one detection, so this is
+  // always an array (usually length 0 or 1 in single-dog mode) -- every
+  // consumer below (bounding boxes, the heatmap position marker) draws one
+  // per entry instead of assuming exactly one.
   function setCurrentIndex(i) {
     const frames = state.frames;
     if (frames.length === 0) return;
     const clamped = Math.max(0, Math.min(frames.length - 1, i));
     state.currentIndex = clamped;
     const frame = frames[clamped];
-    const det = state.detectionByFilename.get(frame.filename);
+    const dets = state.detectionByFilename.get(frame.filename) || [];
+    state.currentFrameDetections = dets;
 
     const frameImg = el("frameImg");
     frameImg.src = `/frames/${encodeURIComponent(frame.filename)}`;
-    if (det) {
-      frameImg.dataset.hasDetection = "1";
-      frameImg.dataset.w = det.w;
-      frameImg.dataset.h = det.h;
-      frameImg.dataset.x = det.x;
-      frameImg.dataset.y = det.y;
-    } else {
-      frameImg.dataset.hasDetection = "0";
-    }
 
     el("frameFilename").textContent = frame.filename;
     el("frameTimestamp").textContent = formatElapsed(elapsedOf(frame.timestamp_ms));
-    el("frameConfidence").textContent = det ? `${Math.round(det.confidence * 100)}% confidence` : "No detection";
+    el("frameConfidence").textContent =
+      dets.length === 0
+        ? "No detection"
+        : dets.length === 1
+        ? `${Math.round(dets[0].confidence * 100)}% confidence`
+        : `${dets.length} dogs detected`;
 
     el("frameSlider").value = String(clamped);
     el("prevBtn").disabled = clamped === 0;
     el("nextBtn").disabled = clamped === frames.length - 1;
 
-    if (det) {
-      positionCurrentMarker(det);
-    } else {
-      hideCurrentMarker();
-    }
+    positionCurrentMarkers(dets);
     updateRulerMarker();
     updateAreaRulerMarkers();
     updateActiveVisitRow();
   }
 
-  function ensureCurrentMarker() {
-    let marker = el("currentMarker");
-    if (!marker) {
-      marker = document.createElement("div");
-      marker.id = "currentMarker";
-      marker.style.position = "absolute";
-      marker.style.width = "10px";
-      marker.style.height = "10px";
-      marker.style.marginLeft = "-5px";
-      marker.style.marginTop = "-5px";
-      marker.style.borderRadius = "50%";
-      marker.style.background = "var(--accent)";
-      marker.style.boxShadow = "0 0 0 2px var(--surface-1)";
-      marker.style.pointerEvents = "none";
+  function ensureCurrentMarkers(count) {
+    const markers = state.currentMarkerEls;
+    while (markers.length < count) {
+      const marker = document.createElement("div");
+      marker.className = "current-marker";
       el("heatmapStage").appendChild(marker);
+      markers.push(marker);
     }
-    return marker;
+    return markers;
   }
 
-  function positionCurrentMarker(det) {
-    const marker = ensureCurrentMarker();
-    marker.style.display = "block";
+  function positionCurrentMarkers(dets) {
+    const markers = ensureCurrentMarkers(dets.length);
     const { frame_width, frame_height } = state.summary;
-    marker.style.left = `${(det.x / frame_width) * 100}%`;
-    marker.style.top = `${(det.y / frame_height) * 100}%`;
-  }
-
-  function hideCurrentMarker() {
-    ensureCurrentMarker().style.display = "none";
+    markers.forEach((marker, i) => {
+      if (i >= dets.length) {
+        marker.style.display = "none";
+        return;
+      }
+      marker.style.display = "block";
+      marker.style.left = `${(dets[i].x / frame_width) * 100}%`;
+      marker.style.top = `${(dets[i].y / frame_height) * 100}%`;
+    });
   }
 
   function drawBoundingBox() {
@@ -224,33 +219,34 @@
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, w, h);
 
-    if (frameImg.dataset.hasDetection !== "1") {
-      return; // no dog detected in this frame -- nothing to draw
-    }
-
-    const bx = Number(frameImg.dataset.x);
-    const by = Number(frameImg.dataset.y);
-    const bw = Number(frameImg.dataset.w);
-    const bh = Number(frameImg.dataset.h);
+    const dets = state.currentFrameDetections;
+    if (dets.length === 0) return; // no dog detected in this frame -- nothing to draw
 
     const styles = getComputedStyle(document.body);
     const accent = styles.getPropertyValue("--accent").trim() || "#2a78d6";
     const surface = styles.getPropertyValue("--surface-1").trim() || "#fcfcfb";
-
-    ctx.strokeStyle = accent;
-    ctx.lineWidth = Math.max(2, Math.round(w / 200));
-    ctx.strokeRect(bx - bw / 2, by - bh / 2, bw, bh);
-
-    // Center point -- the same position used as "the dog's location" for the
-    // heatmap and visits/areas, drawn here too so it reads as the same spot.
+    const boxLineWidth = Math.max(2, Math.round(w / 200));
     const dotRadius = Math.max(4, Math.round(w / 120));
-    ctx.beginPath();
-    ctx.arc(bx, by, dotRadius, 0, Math.PI * 2);
-    ctx.fillStyle = accent;
-    ctx.fill();
-    ctx.lineWidth = Math.max(2, Math.round(w / 300));
-    ctx.strokeStyle = surface;
-    ctx.stroke();
+    const dotLineWidth = Math.max(2, Math.round(w / 300));
+
+    // Multi-dog mode can have more than one box per frame -- draw every one
+    // (all in the same color; there's no per-dog identity to color by).
+    for (const det of dets) {
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = boxLineWidth;
+      ctx.strokeRect(det.x - det.w / 2, det.y - det.h / 2, det.w, det.h);
+
+      // Center point -- the same position used as "the dog's location" for
+      // the heatmap and visits/areas, drawn here too so it reads as the
+      // same spot.
+      ctx.beginPath();
+      ctx.arc(det.x, det.y, dotRadius, 0, Math.PI * 2);
+      ctx.fillStyle = accent;
+      ctx.fill();
+      ctx.lineWidth = dotLineWidth;
+      ctx.strokeStyle = surface;
+      ctx.stroke();
+    }
   }
 
   // ======================================================
@@ -528,7 +524,7 @@
   async function refreshVisits() {
     const distance = Number(el("distanceInput").value);
     const gap = Number(el("gapInput").value) * 1000;
-    state.visits = await fetchJSON(`/api/visits?distance=${distance}&gap=${gap}`);
+    state.visits = await fetchJSON(`/api/visits?mode=${state.mode}&distance=${distance}&gap=${gap}`);
     renderVisitsTable();
     renderKPIs();
   }
@@ -760,14 +756,84 @@
     const areaRadius = Number(el("areaInput").value);
     const topN = Number(el("topNInput").value);
     const data = await fetchJSON(
-      `/api/areas?distance=${distance}&gap=${gap}&area_radius=${areaRadius}&top_n=${topN}`
+      `/api/areas?mode=${state.mode}&distance=${distance}&gap=${gap}&area_radius=${areaRadius}&top_n=${topN}`
     );
     renderAreas(data);
   }
 
   function refreshHeatmap() {
     const blur = Number(el("blurInput").value);
-    el("heatmapImg").src = `/api/heatmap.png?blur=${blur}&t=${Date.now()}`;
+    el("heatmapImg").src = `/api/heatmap.png?mode=${state.mode}&blur=${blur}&t=${Date.now()}`;
+  }
+
+  async function refreshDetections() {
+    state.detections = await fetchJSON(`/api/detections?mode=${state.mode}`);
+    state.detectionByFilename = new Map();
+    for (const d of state.detections) {
+      if (!state.detectionByFilename.has(d.filename)) {
+        state.detectionByFilename.set(d.filename, []);
+      }
+      state.detectionByFilename.get(d.filename).push(d);
+    }
+  }
+
+  // Everything that depends on which detections are "active" (single-dog
+  // top-1-per-frame, or multi-dog every-box-per-frame) -- called once at
+  // startup and again every time the detection-mode toggle flips.
+  async function refreshAll() {
+    await refreshDetections();
+    renderDetectionRulerBackground();
+    await Promise.all([refreshVisits(), refreshAreas()]);
+    refreshHeatmap();
+    renderTrajectory();
+    setCurrentIndex(state.currentIndex);
+  }
+
+  // Multi-dog detection is expensive (a second full YOLO pass), so it's only
+  // ever run lazily, on first toggle-on, via POST /api/multi-dog-detect --
+  // the server caches the result for the life of the process, and this flag
+  // mirrors that so re-toggling doesn't re-request it.
+  async function enableMultiDogMode() {
+    const toggle = el("multiDogToggle");
+    const status = el("multiDogStatus");
+    toggle.disabled = true;
+    if (!state.multiDogComputed) {
+      status.textContent = "Detecting all dogs -- this can take a while...";
+      try {
+        await postJSON("/api/multi-dog-detect", {});
+        state.multiDogComputed = true;
+      } catch (err) {
+        console.error("Multi-dog detection failed:", err);
+        status.textContent = "Multi-dog detection failed -- see console for details.";
+        toggle.checked = false;
+        toggle.disabled = false;
+        return;
+      }
+    }
+    state.mode = "multi";
+    status.textContent = "";
+    el("areasMultiDogNote").hidden = false;
+    el("visitsMultiDogNote").hidden = false;
+    toggle.disabled = false;
+    await refreshAll();
+  }
+
+  async function disableMultiDogMode() {
+    state.mode = "single";
+    el("multiDogStatus").textContent = "";
+    el("areasMultiDogNote").hidden = true;
+    el("visitsMultiDogNote").hidden = true;
+    await refreshAll();
+  }
+
+  function setupModeToggle() {
+    el("multiDogToggle").addEventListener("change", (event) => {
+      if (event.target.checked) {
+        enableMultiDogMode();
+      } else {
+        disableMultiDogMode();
+      }
+    });
   }
 
   function setReferenceFrame(filename) {
@@ -858,6 +924,13 @@
   // show the direction of travel at that instant.
   function renderTrajectory() {
     const card = el("trajectoryCard");
+    // A spline through points from different, untracked dogs isn't a
+    // meaningful route -- the whole point of multi-dog mode is not
+    // pretending there's one continuous subject.
+    if (state.mode === "multi") {
+      card.hidden = true;
+      return;
+    }
     const dets = state.detections;
     if (dets.length === 0) {
       card.hidden = true;
@@ -1026,8 +1099,7 @@
     }
 
     state.frames = await fetchJSON("/api/frames");
-    state.detections = await fetchJSON("/api/detections");
-    state.detectionByFilename = new Map(state.detections.map((d) => [d.filename, d]));
+    await refreshDetections();
     state.frameIndexByFilename = new Map(state.frames.map((f, i) => [f.filename, i]));
 
     el("dashboard").hidden = false;
@@ -1040,6 +1112,7 @@
     setupHeatmapInteraction();
     setupDrawModeControls();
     setupRulerInteraction();
+    setupModeToggle();
     renderDetectionRulerBackground();
 
     if (state.detections.length === 0) {

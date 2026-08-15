@@ -16,6 +16,14 @@
 
   <section class="kpi-row" id="kpiRow" aria-label="Session summary"></section>
 
+  <section class="mode-row" aria-label="Detection mode">
+    <label class="mode-toggle">
+      <input type="checkbox" id="multiDogToggle" />
+      <span>Detect 2+ dogs (no single-dog trajectory)</span>
+    </label>
+    <span class="mode-status" id="multiDogStatus"></span>
+  </section>
+
   <section class="filter-row" aria-label="Analysis parameters">
     <div class="filter-control">
       <label for="distanceInput">Dwell radius (px)</label>
@@ -110,12 +118,18 @@
 
     <div class="card" id="areasCard" hidden>
       <h2>Preferred locations</h2>
+      <div class="multi-dog-note" id="areasMultiDogNote" hidden>
+        Multi-dog mode: dog identity isn't tracked, so a "visit" here may actually jump between different dogs.
+      </div>
       <div class="areas-overview" id="areasOverview"></div>
       <div class="area-list" id="areaList"></div>
     </div>
 
     <div class="card">
       <h2>Visits</h2>
+      <div class="multi-dog-note" id="visitsMultiDogNote" hidden>
+        Multi-dog mode: dog identity isn't tracked, so a "visit" here may actually jump between different dogs.
+      </div>
       <div class="table-scroll">
         <table>
           <thead>
