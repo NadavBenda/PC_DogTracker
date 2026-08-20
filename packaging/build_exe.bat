@@ -14,7 +14,11 @@ echo === Downloading YOLOv8s weights (bundled into the exe, no internet needed a
 python -c "from ultralytics import YOLO; YOLO('yolov8s.pt')" || goto :error
 
 echo === Running PyInstaller ===
-pyinstaller packaging\dogtracker.spec --distpath dist --workpath build --noconfirm || goto :error
+rem Invoked as "python -m PyInstaller" rather than the standalone pyinstaller.exe
+rem shim: on some locked-down (e.g. corporate) machines, execution of that shim
+rem gets silently blocked ("Access is denied.") by policy even when Python
+rem itself runs fine -- going through python.exe as the launcher sidesteps it.
+python -m PyInstaller packaging\dogtracker.spec --distpath dist --workpath build --noconfirm || goto :error
 
 echo.
 echo Build complete: dist\DogTracker.exe
