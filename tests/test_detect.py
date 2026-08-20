@@ -221,6 +221,81 @@ def test_detect_single_with_180_degree_rotation_keeps_dimensions(frames_folder: 
     assert det.frame_height == 48
 
 
+class _CrashingModel:
+    """Raises for one specific filename (simulating a truncated/corrupt
+    image that PIL/ultralytics can't decode), behaves like _FakeModel
+    otherwise."""
+
+    def __init__(self, boxes_by_filename: dict, crash_on: str, exc: Exception):
+        self._inner = _FakeModel(boxes_by_filename)
+        self.crash_on = crash_on
+        self.exc = exc
+        self.predict_calls = 0
+
+    def predict(self, source, classes, verbose, conf=None):
+        self.predict_calls += 1
+        if isinstance(source, (str, Path)) and Path(source).name == self.crash_on:
+            raise self.exc
+        return self._inner.predict(source, classes, verbose, conf=conf)
+
+
+def test_run_detection_skips_a_corrupt_frame_instead_of_crashing(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    good = frames[2].filename
+    bad = frames[3].filename
+    model = _CrashingModel(
+        {good: [([0, 0, 10, 10], 0.9)]},
+        crash_on=bad,
+        exc=OSError("image file is truncated (4 bytes not processed)"),
+    )
+    # Must not raise, and must still return the good frame's detection --
+    # one unreadable file shouldn't take the whole batch down with it.
+    detections = run_detection(frames_folder, frames, model=model, use_cache=False)
+    assert bad not in {d.filename for d in detections}
+
+
+def test_corrupt_frame_result_is_cached_as_no_detection(frames_folder: Path):
+    frames = discover_frames(frames_folder)
+    bad = frames[0].filename
+    model = _CrashingModel({}, crash_on=bad, exc=OSError("truncated"))
+    run_detection(frames_folder, frames, model=model, use_cache=True)
+
+    cache = load_cache(frames_folder)
+    assert cache[bad]["detection"] is None
+
+    # Re-running against the unchanged (still-corrupt) file must hit the
+    # cached null result rather than re-invoking the model on it.
+    model2 = _CrashingModel({}, crash_on=bad, exc=AssertionError("should not be called again"))
+    run_detection(frames_folder, frames, model=model2, use_cache=True)
+    assert model2.predict_calls == 0
+
+
+def test_cache_is_flushed_periodically_not_only_at_the_end(frames_folder: Path, monkeypatch):
+    import dogtracker_pc.detect as detect_module
+
+    monkeypatch.setattr(detect_module, "CACHE_SAVE_INTERVAL_FRAMES", 2)
+    frames = discover_frames(frames_folder)
+    assert len(frames) >= 4  # fixture provides several frames
+
+    save_calls = []
+    real_save_cache = detect_module.save_cache
+
+    def counting_save_cache(folder, entries, rotate_degrees=0):
+        save_calls.append(len(entries))
+        real_save_cache(folder, entries, rotate_degrees)
+
+    monkeypatch.setattr(detect_module, "save_cache", counting_save_cache)
+
+    model = _FakeModel({f.filename: [([0, 0, 5, 5], 0.5)] for f in frames})
+    run_detection(frames_folder, frames, model=model, use_cache=True)
+
+    # With an interval of 2, a mid-run flush must happen before the final
+    # one -- i.e. more than a single save_cache call for 4+ frames.
+    assert len(save_calls) > 1
+    # And the very last flush must have every frame in it.
+    assert save_calls[-1] == len(frames)
+
+
 def test_cache_is_invalidated_when_rotation_setting_changes(frames_folder: Path):
     frames = discover_frames(frames_folder)
     model = _FakeModel({f.filename: [([0, 0, 10, 10], 0.5)] for f in frames})

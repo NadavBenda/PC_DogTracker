@@ -33,6 +33,11 @@ CACHE_DIRNAME = ".dogtracker_cache"
 CACHE_FILENAME = "detections.json"
 CACHE_VERSION = 1
 
+# How often (in newly-detected frames) to flush the cache to disk during a
+# long run, so a crash partway through doesn't throw away everything already
+# detected -- only ever saved once at the very end before this.
+CACHE_SAVE_INTERVAL_FRAMES = 50
+
 
 @dataclass(frozen=True)
 class Detection:
@@ -159,7 +164,17 @@ def run_detection(
             model = model_factory()
         total = len(to_run)
         for done, frame in enumerate(to_run, start=1):
-            det = _detect_single(model, frame, rotate_degrees)
+            try:
+                det = _detect_single(model, frame, rotate_degrees)
+            except Exception as exc:
+                # A corrupt/truncated image (e.g. a capture cut off mid-write
+                # by a power loss) fails here, not in frames.py's discovery
+                # scan -- that only reads the header. Treat it like "no dog
+                # in this frame" rather than losing the whole batch to one
+                # bad file; it'll be retried automatically if the file is
+                # ever replaced (its fingerprint would then differ).
+                logger.warning("Skipping frame with unreadable image data %s: %s", frame.filename, exc)
+                det = None
             cache[frame.filename] = {
                 "fingerprint": _fingerprint(frame),
                 "detection": asdict(det) if det else None,
@@ -167,6 +182,8 @@ def run_detection(
             raw_by_filename[frame.filename] = det
             if progress_cb:
                 progress_cb(done, total)
+            if use_cache and done % CACHE_SAVE_INTERVAL_FRAMES == 0:
+                save_cache(folder, cache, rotate_degrees)
         if use_cache:
             save_cache(folder, cache, rotate_degrees)
 
