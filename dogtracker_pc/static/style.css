@@ -157,48 +157,6 @@ header.top .folder {
   color: var(--critical);
 }
 
-/* Detection mode */
-.mode-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px 16px;
-  margin-bottom: 20px;
-  font-size: 12px;
-}
-
-.mode-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  color: var(--text-secondary);
-}
-
-.mode-toggle input {
-  accent-color: var(--accent);
-  width: 16px;
-  height: 16px;
-}
-
-.mode-status {
-  color: var(--text-muted);
-}
-
-.multi-dog-note {
-  font-size: 11px;
-  color: var(--text-muted);
-  background: var(--page);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
-  margin-bottom: 12px;
-}
-
 /* Filter row */
 .filter-row {
   display: flex;
@@ -288,19 +246,6 @@ header.top .folder {
   height: auto;
   display: block;
   opacity: 0.6;
-}
-
-.current-marker {
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  margin-left: -5px;
-  margin-top: -5px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 2px var(--surface-1);
-  pointer-events: none;
-  display: none;
 }
 
 .legend {

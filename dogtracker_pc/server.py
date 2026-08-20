@@ -22,7 +22,7 @@ from .analysis import (
     hull_polygon,
     segment_visits,
 )
-from .detect import Detection, frames_with_multiple_dogs, run_multi_dog_detection
+from .detect import Detection
 from .frames import Frame
 from .regions import add_manual_region, delete_manual_region, load_manual_regions, point_in_polygon
 
@@ -65,32 +65,19 @@ def create_app(
     # frame 0, which can catch camera warm-up, a passerby, or bad light.
     reference_frame = frames[len(frames) // 2].filename if frames else None
 
-    # Multi-dog mode ("detect 2+ dogs"): computed lazily, only if the
-    # dashboard toggle is actually used, and kept in memory for the life of
-    # this app instance. run_multi_dog_detection() also persists to its own
-    # cache file on disk (separate from the single-dog cache `detections`
-    # above came from), so a restart reuses that instead of re-running YOLO.
-    multi_dog_state: dict = {"detections": None}
-
-    def active_detections(mode: str) -> list[Detection]:
-        if mode == "multi" and multi_dog_state["detections"] is not None:
-            return multi_dog_state["detections"]
-        return detections
-
     @app.get("/")
     def index():
         return app.send_static_file("index.html")
 
     @app.get("/api/summary")
     def summary():
-        mode = request.args.get("mode", default="single")
         first_ts = frames[0].timestamp_ms if frames else 0
         last_ts = frames[-1].timestamp_ms if frames else 0
         return jsonify(
             {
                 "folder": str(folder),
                 "frame_count": len(frames),
-                "detection_count": len(active_detections(mode)),
+                "detection_count": len(detections),
                 "frame_width": frame_width,
                 "frame_height": frame_height,
                 "first_timestamp_ms": first_ts,
@@ -118,7 +105,6 @@ def create_app(
 
     @app.get("/api/detections")
     def list_detections():
-        mode = request.args.get("mode", default="single")
         return jsonify(
             [
                 {
@@ -131,34 +117,15 @@ def create_app(
                     "h": d.h,
                     "confidence": d.confidence,
                 }
-                for i, d in enumerate(active_detections(mode))
+                for i, d in enumerate(detections)
             ]
-        )
-
-    @app.post("/api/multi-dog-detect")
-    def multi_dog_detect():
-        """Lazily runs the "keep every dog, not just the best one" detection
-        pass (see detect.run_multi_dog_detection) the first time the
-        dashboard's multi-dog toggle is switched on, and caches the result in
-        memory for the rest of this app's lifetime. Idempotent -- safe to
-        call again, it just returns the already-computed result.
-        """
-        if multi_dog_state["detections"] is None:
-            multi_dog_state["detections"] = run_multi_dog_detection(folder, frames, rotate_degrees=rotate_degrees)
-        dets = multi_dog_state["detections"]
-        return jsonify(
-            {
-                "detection_count": len(dets),
-                "frames_with_multiple": frames_with_multiple_dogs(dets),
-            }
         )
 
     @app.get("/api/visits")
     def list_visits():
-        mode = request.args.get("mode", default="single")
         distance = request.args.get("distance", default=DEFAULT_DISTANCE_THRESHOLD_PX, type=float)
         gap = request.args.get("gap", default=DEFAULT_TIME_GAP_THRESHOLD_MS, type=int)
-        visits = segment_visits(active_detections(mode), distance_threshold_px=distance, time_gap_threshold_ms=gap)
+        visits = segment_visits(detections, distance_threshold_px=distance, time_gap_threshold_ms=gap)
         return jsonify(
             [
                 {
@@ -178,14 +145,12 @@ def create_app(
 
     @app.get("/api/areas")
     def list_areas():
-        mode = request.args.get("mode", default="single")
-        dets = active_detections(mode)
         distance = request.args.get("distance", default=DEFAULT_DISTANCE_THRESHOLD_PX, type=float)
         gap = request.args.get("gap", default=DEFAULT_TIME_GAP_THRESHOLD_MS, type=int)
         area_radius = request.args.get("area_radius", default=DEFAULT_AREA_RADIUS_PX, type=float)
         top_n = request.args.get("top_n", default=DEFAULT_TOP_AREAS_COUNT, type=int)
 
-        visits = segment_visits(dets, distance_threshold_px=distance, time_gap_threshold_ms=gap)
+        visits = segment_visits(detections, distance_threshold_px=distance, time_gap_threshold_ms=gap)
         areas = find_areas(visits, area_radius_px=area_radius)
 
         def visit_summary(visit_index: int) -> dict:
@@ -195,13 +160,13 @@ def create_app(
                 "start_ts": v.start_ts,
                 "duration_ms": v.duration_ms,
                 "frame_count": v.frame_count,
-                "representative_filename": dets[mid].filename,
+                "representative_filename": detections[mid].filename,
                 "representative_index": mid,
             }
 
         def area_hull(area) -> list[list[float]]:
             points = [
-                (dets[di].x, dets[di].y)
+                (detections[di].x, detections[di].y)
                 for vi in area.visit_indices
                 for di in visits[vi].detection_indices
             ]
@@ -292,27 +257,24 @@ def create_app(
 
     @app.get("/api/heatmap.png")
     def heatmap_png():
-        mode = request.args.get("mode", default="single")
         blur = request.args.get("blur", default=DEFAULT_BLUR_RADIUS_PX, type=int)
-        img = build_heatmap(active_detections(mode), frame_width or 320, frame_height or 240, blur_radius=blur)
+        img = build_heatmap(detections, frame_width or 320, frame_height or 240, blur_radius=blur)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return Response(buf.getvalue(), mimetype="image/png")
 
     @app.get("/api/nearest")
     def nearest():
-        mode = request.args.get("mode", default="single")
-        dets = active_detections(mode)
         x = request.args.get("x", type=float)
         y = request.args.get("y", type=float)
         if x is None or y is None:
             abort(400, description="x and y query params are required")
-        if not dets:
+        if not detections:
             abort(404, description="No detections available")
 
         best_index = 0
         best_dist_sq: Optional[float] = None
-        for i, d in enumerate(dets):
+        for i, d in enumerate(detections):
             dist_sq = (d.x - x) ** 2 + (d.y - y) ** 2
             if best_dist_sq is None or dist_sq < best_dist_sq:
                 best_dist_sq = dist_sq
